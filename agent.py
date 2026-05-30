@@ -50,7 +50,8 @@ class EbooksAgent:
         self._bot = self._build_bot()
         self._plugin = self._bot.get_plugin(EbooksPlugin)
         self._bot.create_connection()
-        await asyncio.wait_for(self._plugin._connected.wait(), timeout=timeout)
+        async with asyncio.timeout(timeout):
+            await self._plugin._connected.wait()
 
     def stop(self):
         if self._bot:
@@ -59,4 +60,5 @@ class EbooksAgent:
     async def search(self, term: str, timeout: int = 60) -> Path:
         if self._plugin is None:
             raise RuntimeError("Not connected — call start() first")
-        return await self._plugin.search(term, timeout=timeout)
+        async with asyncio.timeout(timeout):
+            return await self._plugin.search(term)
