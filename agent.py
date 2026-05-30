@@ -15,6 +15,7 @@ class EbooksAgent:
         self._plugin: EbooksPlugin | None = None
 
     def _build_bot(self) -> irc3.IrcBot:
+        # Configure our server / user settings
         bot = irc3.IrcBot.from_config({
             "nick": self._nick,
             "autojoins": [],
@@ -26,8 +27,14 @@ class EbooksAgent:
                 "irc3.plugins.userlist",
             ],
         })
+        # Register our plugin
         bot.include(EbooksPlugin)
+        # Get back our plugin instance,
+        # now tied to irc3 lifecycle
         plugin = bot.get_plugin(EbooksPlugin)
+        # Add our event handlers
+        # 1. Listening for a connection
+        # 2. Listening for a DCC file send
         bot.attach_events(
             irc3.event(irc3.rfc.CONNECTED, plugin.on_connected),
             irc3.event(
@@ -35,9 +42,11 @@ class EbooksAgent:
                 plugin.on_dcc_send,
             ),
         )
+        # Return a reference to our bot
         return bot
 
     async def start(self, timeout: int = 30):
+        # Create our bot and wait before we do anything else
         self._bot = self._build_bot()
         self._plugin = self._bot.get_plugin(EbooksPlugin)
         self._bot.create_connection()
