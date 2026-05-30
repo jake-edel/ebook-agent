@@ -9,7 +9,7 @@ from plugin import EbooksPlugin
 
 
 class EbooksAgent:
-    def __init__(self, nick: str = "fierro_viejo"):
+    def __init__(self, nick: str = "freddy_fettuccine"):
         self._nick = nick
         self._bot: irc3.IrcBot | None = None
         self._plugin: EbooksPlugin | None = None
@@ -37,8 +37,8 @@ class EbooksAgent:
         # 2. Listening for a DCC file send
         bot.attach_events(
             irc3.event(irc3.rfc.CONNECTED, plugin.on_connected),
-            irc3.event(
-                r"(?P<mask>\S+) (?:PRIVMSG|NOTICE) (?P<target>\S+) :(?P<text>.*\x01DCC SEND.*)",
+irc3.event(
+                r"(?P<mask>\S+) (?:PRIVMSG|NOTICE) (?P<target>\S+) :(?P<text>.*DCC SEND.*)",
                 plugin.on_dcc_send,
             ),
         )

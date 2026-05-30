@@ -33,8 +33,12 @@ class EbooksPlugin:
         m = DCC_SEND_RE.search(text)
         if not m:
             return
-        # Unpack the matching groups
-        filename, ip_int, port, filesize = m.group(1), int(m.group(2)), int(m.group(3)), int(m.group(4))
+        # Unpack the named groups — quoted handles filenames with spaces,
+        # bare handles single-word filenames without quotes
+        filename = m.group("quoted") or m.group("bare")
+        ip_int = int(m.group("ip"))
+        port = int(m.group("port"))
+        filesize = int(m.group("filesize"))
         # Bit wizardry to convert the large int IP representation to a network IP address
         ip = socket.inet_ntoa(struct.pack("!I", ip_int))
         # Stuff into the file queue
@@ -50,7 +54,7 @@ class EbooksPlugin:
         # Lets yank out the data
         try:
             filename, ip, port, filesize = await asyncio.wait_for(
-                self._dcc_queue.get()
+                self._dcc_queue.get(), 60
             )
         except asyncio.TimeoutError:
             raise TimeoutError(f"No DCC offer received within {60}s for '{term}'")
