@@ -34,8 +34,8 @@ class EbooksPlugin:
         self._dcc_queue.put_nowait((filename, ip, port, filesize))
 
     async def search(self, term: str, timeout: int = 60) -> Path:
-        self.bot.privmsg("#ebooks", f"@search {term}")
-        log.info("Search submitted: %s", term)
+        self.bot.privmsg("#ebooks", term)
+        log.info("Message sent: %s", term)
 
         try:
             filename, ip, port, filesize = await asyncio.wait_for(
