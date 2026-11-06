@@ -63,6 +63,24 @@ echo "Foundation Asimov" | socat - UNIX-CONNECT:/tmp/ebooks.sock
 
 Returns the file path on success, or an error message on timeout.
 
+## Testing
+
+Install the dev dependencies once (with the venv active):
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+Then run the suite from the project root:
+
+```bash
+pytest            # or: .venv/bin/python -m pytest
+pytest -v         # list every test
+pytest tests/test_limits.py   # just one file
+```
+
+The tests never touch the network or your real `downloads/` folder — each test gets its own temporary downloads directory, and DCC senders are faked locally.
+
 ## How it works
 
 1. Connects to `irc.irchighway.net:6667` and joins `#ebooks`
@@ -81,6 +99,7 @@ plugin.py         — irc3 plugin, handles IRC events and DCC offers
 unix_socket.py    — Unix socket server for external input
 dcc.py            — DCC file transfer and zip extraction
 downloads/        — where files are saved
+tests/            — pytest suite (paths, offers, plugin gating, size limits)
 ```
 
 ## Output
