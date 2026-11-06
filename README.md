@@ -7,9 +7,33 @@ A Python agent that connects to IRCHighway's `#ebooks` channel, sends a search t
 - Python 3.11+
 - `irc3`
 
+## Setup
+
+First time only — create a virtual environment in `.venv/` and install dependencies into it:
+
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
+
+Every new terminal session — activate the venv before running the agent:
+
+```bash
+source .venv/bin/activate
+```
+
+Your prompt should now start with `(.venv)`. To confirm, `which python` should point inside the project's `.venv/`. Run `deactivate` to leave the venv.
+
+Using fish or csh? Use `source .venv/bin/activate.fish` or `source .venv/bin/activate.csh` instead.
+
+Skip activation entirely by calling the venv's Python directly:
+
+```bash
+.venv/bin/python ebooks_agent.py
+```
+
+After pulling changes that touch `requirements.txt`, re-run `pip install -r requirements.txt` with the venv active.
 
 ## Usage
 
