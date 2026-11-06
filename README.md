@@ -55,11 +55,13 @@ Type `exit` or `quit` to disconnect, or hit `Ctrl+C`.
 
 ### Unix socket
 
-The agent also listens on `/tmp/ebooks.sock` for external input while the CLI is running:
+The agent also listens on a Unix socket for external input while the CLI is running. The path is printed at startup (`Listening on ...`) — normally `$XDG_RUNTIME_DIR/ebooks.sock`, i.e. `/run/user/<your uid>/ebooks.sock`:
 
 ```bash
-echo "Foundation Asimov" | socat - UNIX-CONNECT:/tmp/ebooks.sock
+echo "Foundation Asimov" | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/ebooks.sock
 ```
+
+Only your user can use it: the socket is mode `0600` inside a directory only you can access, and connections from other users are rejected. If `XDG_RUNTIME_DIR` isn't set (e.g. some cron or SSH sessions), it falls back to a private `/tmp/ebooks-<uid>/` directory.
 
 Returns the file path on success, or an error message on timeout.
 
