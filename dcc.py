@@ -4,6 +4,7 @@ import asyncio
 import ipaddress
 import os
 import re
+import shutil
 import struct
 import zipfile
 from dataclasses import dataclass
@@ -18,9 +19,25 @@ _UNSAFE_CHARS_RE = re.compile(r'[\x00-\x1f\x7f<>:"/\\|?*]')
 # Most filesystems cap a filename at 255 bytes; leave headroom
 _MAX_NAME_BYTES = 200
 
+# Largest file we'll accept, either over DCC or extracted from a zip.
+# Ebooks are rarely more than a few MB; big illustrated PDFs can reach tens.
+# Also keeps DCC's 32-bit byte-count acks far from overflowing (4 GiB).
+MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024  # 100 MiB
+# Leave this much free disk space after a download
+_DISK_HEADROOM_BYTES = 512 * 1024 * 1024  # 512 MiB
+_CHUNK_SIZE = 64 * 1024
 
-class UnsafeFilenameError(ValueError):
+
+class DownloadError(Exception):
+    """Base class for any refusal or failure while fetching a file."""
+
+
+class UnsafeFilenameError(DownloadError, ValueError):
     """Raised when a filename can't be turned into a path inside DOWNLOADS_DIR."""
+
+
+class FileTooLargeError(DownloadError, ValueError):
+    """Raised when a download or extracted file would exceed MAX_DOWNLOAD_BYTES or free disk."""
 
 
 def safe_download_path(name: str) -> Path:
@@ -79,7 +96,7 @@ DCC_SEND_RE = re.compile(
 _MIN_DCC_PORT = 1024
 
 
-class InvalidOfferError(ValueError):
+class InvalidOfferError(DownloadError, ValueError):
     """Raised when a DCC SEND offer is malformed or points somewhere we won't connect."""
 
 
@@ -116,12 +133,19 @@ def parse_dcc_offer(text: str) -> DccOffer | None:
     # Only connect to publicly routable addresses. This rejects loopback
     # (127/8), private LAN ranges, link-local, CGNAT, multicast, reserved and
     # 0.0.0.0 — so an offer can't make us poke at our own machine or network.
-    if not addr.is_global:
+    # Note: Python counts multicast (224/4) as "global", so check it explicitly.
+    if not addr.is_global or addr.is_multicast:
         raise InvalidOfferError(f"Refusing non-public DCC address {addr}")
     if not _MIN_DCC_PORT <= port <= 65535:
         raise InvalidOfferError(f"Refusing DCC port {port}")
     if filesize <= 0:
         raise InvalidOfferError(f"Refusing DCC offer with size {filesize}")
+    # Checked here, before we ever connect, so an oversized offer costs nothing
+    if filesize > MAX_DOWNLOAD_BYTES:
+        raise FileTooLargeError(
+            f"Refusing {filename!r}: {filesize:,} bytes exceeds the "
+            f"{MAX_DOWNLOAD_BYTES:,}-byte limit"
+        )
 
     return DccOffer(filename=filename, ip=str(addr), port=port, filesize=filesize)
 
@@ -132,26 +156,49 @@ async def receive_dcc(ip: str, port: int, filesize: int, dest: Path):
     # Re-check here so callers can't bypass sanitization by passing a raw path
     if dest.resolve().parent != DOWNLOADS_DIR:
         raise UnsafeFilenameError(f"Refusing to write outside downloads dir: {dest}")
+    # Callers should have gone through parse_dcc_offer, but enforce it here too
+    if filesize > MAX_DOWNLOAD_BYTES:
+        raise FileTooLargeError(f"{filesize:,} bytes exceeds the {MAX_DOWNLOAD_BYTES:,}-byte limit")
+    _check_disk_space(filesize)
 
     # Open a direct TCP connection to the sender (bypasses IRC server entirely)
     reader, writer = await asyncio.open_connection(ip, port)
     received = 0
-    # Open destination file for writing in binary mode (never via a symlink)
-    with _open_for_write(dest) as file:
-        while received < filesize:
-            # Read a chunk of bytes from the connection
-            chunk = await reader.read(4096)
-            if not chunk:
-                break
-            # Write chunk to file, and also ack back to the sender
-            # how many total bytes we've received so far
-            file.write(chunk)
-            received += len(chunk)
-            writer.write(struct.pack("!I", received))
-            # Flush the write buffer — actually send the ack over the wire
-            await writer.drain()
-    writer.close()
-    await writer.wait_closed()
+    try:
+        # Open destination file for writing in binary mode (never via a symlink)
+        with _open_for_write(dest) as file:
+            while received < filesize:
+                # Read a chunk of bytes from the connection — never more than the
+                # bytes still owed, so a sender that keeps streaming past the size
+                # it advertised can't make us write a byte more than agreed
+                chunk = await reader.read(min(_CHUNK_SIZE, filesize - received))
+                if not chunk:
+                    break
+                # Write chunk to file, and also ack back to the sender
+                # how many total bytes we've received so far
+                file.write(chunk)
+                received += len(chunk)
+                writer.write(struct.pack("!I", received))
+                # Flush the write buffer — actually send the ack over the wire
+                await writer.drain()
+    except BaseException:
+        # Failed or cancelled (e.g. timeout) — don't leave a partial file behind
+        dest.unlink(missing_ok=True)
+        raise
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except (ConnectionError, OSError):
+            pass
+
+
+def _check_disk_space(needed: int):
+    free = shutil.disk_usage(DOWNLOADS_DIR).free
+    if free - needed < _DISK_HEADROOM_BYTES:
+        raise FileTooLargeError(
+            f"Not enough disk space: need {needed:,} bytes, {free:,} free"
+        )
 
 
 def extract_ebook(zip_path: Path, term: str) -> Path:
@@ -174,11 +221,34 @@ def extract_ebook(zip_path: Path, term: str) -> Path:
         target = members[0]
         suffix = Path(target.filename).suffix.lower() or ".txt"
 
+        # Zip bomb guard, part 1: the zip's own header says how big the file
+        # will be once decompressed. Refuse before decompressing anything.
+        if target.file_size > MAX_DOWNLOAD_BYTES:
+            raise FileTooLargeError(
+                f"Refusing to extract {target.filename!r}: {target.file_size:,} bytes "
+                f"uncompressed exceeds the {MAX_DOWNLOAD_BYTES:,}-byte limit"
+            )
+        _check_disk_space(target.file_size)
+
         # Write the file to our downloads directory using the sanitized search term as the filename.
         # Only the search term and extension are used — never the member's own path inside the zip
         out_path = safe_download_path(f"{term}{suffix}")
-        with _open_for_write(out_path) as out:
-            out.write(file.read(target.filename))
+        try:
+            # Zip bomb guard, part 2: the header can lie, so stream in chunks
+            # and count what actually comes out rather than read() it all into memory
+            written = 0
+            with file.open(target) as src, _open_for_write(out_path) as out:
+                while chunk := src.read(_CHUNK_SIZE):
+                    written += len(chunk)
+                    if written > MAX_DOWNLOAD_BYTES:
+                        raise FileTooLargeError(
+                            f"Refusing to extract {target.filename!r}: decompressed past "
+                            f"the {MAX_DOWNLOAD_BYTES:,}-byte limit"
+                        )
+                    out.write(chunk)
+        except BaseException:
+            out_path.unlink(missing_ok=True)
+            raise
 
     # Let go of the zip now that we've extracted what we need
     zip_path.unlink()

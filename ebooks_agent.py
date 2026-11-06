@@ -4,7 +4,7 @@ import asyncio
 import logging
 
 from agent import EbooksAgent
-from dcc import UnsafeFilenameError
+from dcc import DownloadError
 from unix_socket import unix_socket
 
 
@@ -27,7 +27,7 @@ async def _input_loop(agent: EbooksAgent):
             # and await a response
             path = await agent.search(term)
             print(path)
-        except (TimeoutError, UnsafeFilenameError) as e:
+        except (TimeoutError, DownloadError) as e:
             print(f"Error: {e}")
 
 

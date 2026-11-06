@@ -9,6 +9,8 @@ import irc3
 
 from dcc import (
     DccOffer,
+    DownloadError,
+    FileTooLargeError,
     InvalidOfferError,
     extract_ebook,
     parse_dcc_offer,
@@ -63,18 +65,23 @@ class EbooksPlugin:
         if target is None or target.lower() != self.bot.nick.lower():
             return
 
+        # Parse up front, but hold on to any validation error until we know
+        # whether this offer came from someone we're actually waiting on
+        error: DownloadError | None = None
         try:
             offer = parse_dcc_offer(text)
-        except InvalidOfferError as e:
-            log.warning("Rejected DCC offer from %s: %s", sender, e)
-            return
-        if offer is None:
-            return
+        except (InvalidOfferError, FileTooLargeError) as e:
+            offer, error = None, e
+        if offer is None and error is None:
+            return  # not a DCC SEND at all
 
         # Drop offers that arrive when we didn't ask for anything, or after
         # the current search already accepted one
         if self._pending is None or self._pending.done():
-            log.warning("Ignoring unsolicited DCC offer from %s: %s", sender, offer.filename)
+            log.warning(
+                "Ignoring unsolicited DCC offer from %s: %s",
+                sender, offer.filename if offer else error,
+            )
             return
 
         # If the search named a bot ("!Bot ..."), only that bot may answer
@@ -87,6 +94,14 @@ class EbooksPlugin:
         # Otherwise the sender must at least be someone in #ebooks
         if not self._is_channel_member(sender):
             log.warning("Ignoring DCC offer from %s — not in %s", sender, CHANNEL)
+            return
+
+        if error is not None:
+            # The bot we asked replied, but with something we won't accept
+            # (too large, bad address...). Fail the search now with the real
+            # reason instead of letting it sit until the timeout.
+            log.warning("Rejected DCC offer from %s: %s", sender, error)
+            self._pending.set_exception(error)
             return
 
         self._pending.set_result(offer)
