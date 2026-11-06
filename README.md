@@ -100,8 +100,11 @@ agent.py          — EbooksAgent class, owns the IRC connection lifecycle
 plugin.py         — irc3 plugin, handles IRC events and DCC offers
 unix_socket.py    — Unix socket server for external input
 dcc.py            — DCC file transfer and zip extraction
+results.py        — parser for SearchBot result files
 downloads/        — where files are saved
-tests/            — pytest suite (paths, offers, plugin gating, size limits)
+tests/            — pytest suite (paths, offers, plugin gating, size limits, socket)
+TODO.md           — outstanding work and accepted risks
+docs/tui-plan.md  — design and phases for the planned TUI
 ```
 
 ## Output
