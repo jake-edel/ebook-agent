@@ -1,10 +1,12 @@
 """DCC file transfer and ebook extraction."""
 
 import asyncio
+import ipaddress
 import os
 import re
 import struct
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 
 DOWNLOADS_DIR = (Path(__file__).parent / "downloads").resolve()
@@ -64,9 +66,64 @@ def _open_for_write(path: Path):
 # Some bots wrap filenames in quotes: DCC SEND "my file.epub" ip port size
 # Others skip them:                   DCC SEND myfile.epub ip port size
 # The \x01 CTCP delimiter is also optional — not all bots include it.
+# Anchored to the start of the message so ordinary chat that merely
+# *mentions* "DCC SEND" somewhere isn't treated as an offer.
 DCC_SEND_RE = re.compile(
-    r'DCC SEND (?:"(?P<quoted>[^"]+)"|(?P<bare>\S+)) (?P<ip>\d+) (?P<port>\d+) (?P<filesize>\d+)'
+    r'^\x01?DCC SEND (?:"(?P<quoted>[^"]+)"|(?P<bare>\S+)) (?P<ip>\d+) (?P<port>\d+) (?P<filesize>\d+)'
 )
+
+# Ports below 1024 are privileged service ports (ssh, http, smtp, ...).
+# Real DCC senders use high ports; refusing low ones stops an offer from
+# pointing us at someone's service. Port 0 means "reverse/passive DCC",
+# which we don't support.
+_MIN_DCC_PORT = 1024
+
+
+class InvalidOfferError(ValueError):
+    """Raised when a DCC SEND offer is malformed or points somewhere we won't connect."""
+
+
+@dataclass(frozen=True)
+class DccOffer:
+    filename: str
+    ip: str
+    port: int
+    filesize: int
+
+
+def parse_dcc_offer(text: str) -> DccOffer | None:
+    """Parse and validate a DCC SEND offer.
+
+    Returns None if the text isn't a DCC SEND at all, raises InvalidOfferError
+    if it is one but fails validation, otherwise returns the offer.
+    """
+    m = DCC_SEND_RE.match(text)
+    if not m:
+        return None
+
+    # Unpack the named groups — quoted handles filenames with spaces,
+    # bare handles single-word filenames without quotes
+    filename = m.group("quoted") or m.group("bare")
+    port = int(m.group("port"))
+    filesize = int(m.group("filesize"))
+
+    # DCC encodes the IPv4 address as a single 32-bit integer
+    try:
+        addr = ipaddress.IPv4Address(int(m.group("ip")))
+    except ipaddress.AddressValueError:
+        raise InvalidOfferError(f"Invalid IP in DCC offer: {m.group('ip')}")
+
+    # Only connect to publicly routable addresses. This rejects loopback
+    # (127/8), private LAN ranges, link-local, CGNAT, multicast, reserved and
+    # 0.0.0.0 — so an offer can't make us poke at our own machine or network.
+    if not addr.is_global:
+        raise InvalidOfferError(f"Refusing non-public DCC address {addr}")
+    if not _MIN_DCC_PORT <= port <= 65535:
+        raise InvalidOfferError(f"Refusing DCC port {port}")
+    if filesize <= 0:
+        raise InvalidOfferError(f"Refusing DCC offer with size {filesize}")
+
+    return DccOffer(filename=filename, ip=str(addr), port=port, filesize=filesize)
 
 _EBOOK_EXTS = {".txt", ".epub", ".mobi", ".pdf", ".doc", ".docx", ".rtf", ".azw", ".azw3"}
 

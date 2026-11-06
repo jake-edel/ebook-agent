@@ -37,8 +37,11 @@ class EbooksAgent:
         # 2. Listening for a DCC file send
         bot.attach_events(
             irc3.event(irc3.rfc.CONNECTED, plugin.on_connected),
-irc3.event(
-                r"(?P<mask>\S+) (?:PRIVMSG|NOTICE) (?P<target>\S+) :(?P<text>.*DCC SEND.*)",
+            irc3.event(
+                # Mirrors irc3's own PRIVMSG pattern: optional IRCv3 tags, then the
+                # ":" prefix marker *outside* the mask group so the nick parses as
+                # "Search", not ":Search"
+                r"^(@(?P<tags>\S+) )?:(?P<mask>\S+!\S+@\S+) (?:PRIVMSG|NOTICE) (?P<target>\S+) :(?P<text>.*DCC SEND.*)",
                 plugin.on_dcc_send,
             ),
         )
