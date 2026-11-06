@@ -9,7 +9,7 @@ from plugin import EbooksPlugin
 
 
 class EbooksAgent:
-    def __init__(self, nick: str = "vuelo_demorado"):
+    def __init__(self, nick: str = "pt_bookbot"):
         self._nick = nick
         self._bot: irc3.IrcBot | None = None
         self._plugin: EbooksPlugin | None = None

@@ -7,6 +7,8 @@ Test: echo "dune frank herbert" | socat - UNIX-CONNECT:/tmp/ebooks.sock
 import asyncio
 import os
 
+from dcc import UnsafeFilenameError
+
 SOCKET_PATH = "/tmp/ebooks.sock"
 
 
@@ -28,7 +30,7 @@ def _make_handler(agent):
             # Write the response back to the external source
             path = await agent.search(term)
             writer.write(f"{path}\n".encode())
-        except TimeoutError as e:
+        except (TimeoutError, UnsafeFilenameError) as e:
             writer.write(f"error: {e}\n".encode())
 
         try:

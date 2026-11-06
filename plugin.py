@@ -8,7 +8,7 @@ from pathlib import Path
 
 import irc3
 
-from dcc import DOWNLOADS_DIR, DCC_SEND_RE, extract_ebook, receive_dcc
+from dcc import DCC_SEND_RE, extract_ebook, receive_dcc, safe_download_path
 
 log = logging.getLogger(__name__)
 
@@ -59,7 +59,9 @@ class EbooksPlugin:
         except asyncio.TimeoutError:
             raise TimeoutError(f"No DCC offer received within {60}s for '{term}'")
 
-        dest = DOWNLOADS_DIR / filename
+        # The filename is chosen by the remote bot — never trust it as a path.
+        # Raises UnsafeFilenameError if it can't be made safe.
+        dest = safe_download_path(filename)
         log.info("DCC SEND offer: %s from %s:%s (%s bytes)", filename, ip, port, filesize)
         # If we've made it this far, we probably have a file
         # Lets receive it, and extract if its a zip
