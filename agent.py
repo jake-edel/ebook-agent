@@ -1,11 +1,23 @@
 """EbooksAgent — owns the IRC connection lifecycle."""
 
 import asyncio
+import hashlib
+import logging
 from pathlib import Path
 
 import irc3
 
 from plugin import EbooksPlugin
+
+log = logging.getLogger(__name__)
+
+HOST = "irc.irchighway.net"
+# TLS port. IRCHighway round-robins across several servers, each with its own
+# self-signed certificate, and doesn't publish the list — so certificates
+# can't be verified or pinned. We still use TLS: it keeps searches and nick
+# private from passive observers (shared Wi-Fi, ISP). It does NOT stop an
+# active man-in-the-middle; note DCC file transfers are plaintext regardless.
+PORT = 6697
 
 
 class EbooksAgent:
@@ -19,9 +31,11 @@ class EbooksAgent:
         bot = irc3.IrcBot.from_config({
             "nick": self._nick,
             "autojoins": [],
-            "host": "irc.irchighway.net",
-            "port": 6667,
-            "ssl": False,
+            "host": HOST,
+            "port": PORT,
+            "ssl": True,
+            # Encrypt without verifying — see the note on PORT above
+            "ssl_verify": "CERT_NONE",
             "includes": [
                 "irc3.plugins.core",
                 "irc3.plugins.userlist",
@@ -53,8 +67,22 @@ class EbooksAgent:
         self._bot = self._build_bot()
         self._plugin = self._bot.get_plugin(EbooksPlugin)
         self._bot.create_connection()
-        async with asyncio.timeout(30):
-            await self._plugin._connected.wait()
+        try:
+            async with asyncio.timeout(30):
+                await self._plugin._connected.wait()
+        except TimeoutError:
+            raise TimeoutError(f"Could not connect to {HOST}:{PORT} within 30s") from None
+        self._log_tls()
+
+    def _log_tls(self):
+        # Record which server we landed on and its certificate fingerprint,
+        # so a change is at least visible in the logs
+        transport = self._bot.protocol.transport
+        tls = transport.get_extra_info("ssl_object")
+        peer = transport.get_extra_info("peername")
+        der = tls.getpeercert(binary_form=True) if tls else None
+        fp = hashlib.sha256(der).hexdigest()[:16] if der else "unknown"
+        log.info("TLS %s to %s (cert sha256 %s…, unverified)", tls.version() if tls else "?", peer[0], fp)
 
     def stop(self):
         if self._bot:

@@ -83,7 +83,7 @@ The tests never touch the network or your real `downloads/` folder — each test
 
 ## How it works
 
-1. Connects to `irc.irchighway.net:6667` and joins `#ebooks`
+1. Connects to `irc.irchighway.net:6697` over TLS and joins `#ebooks`
 2. Sends your search term as a message to the channel
 3. Waits for a `DCC SEND` offer from a channel bot (up to 60 seconds)
 4. Opens a direct TCP connection to the bot and streams the file to `downloads/`
@@ -108,5 +108,7 @@ Downloaded files are saved to the `downloads/` directory alongside the script, n
 
 ## Notes
 
-- The default nick is `fierro_viejo`. Pass a different nick to `EbooksAgent(nick=...)` if needed.
+- The default nick is `pt_bookbot`. Pass a different nick to `EbooksAgent(nick=...)` if needed.
 - Connection timeout is 30 seconds, search timeout is 60 seconds.
+- **TLS is encrypt-only.** IRCHighway rotates DNS across several servers, each with its own self-signed certificate, so certificates aren't verified. This keeps your searches private from passive observers (shared Wi-Fi, your ISP) but not from an active man-in-the-middle. Each connection logs the server IP and certificate fingerprint.
+- **DCC file transfers are plaintext** — that's how the DCC protocol works, and it's independent of the IRC connection's TLS.

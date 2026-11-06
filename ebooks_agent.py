@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import sys
 
 from agent import EbooksAgent
 from dcc import DownloadError
@@ -66,3 +67,7 @@ if __name__ == "__main__":
         asyncio.run(_main())
     except KeyboardInterrupt:
         pass
+    except TimeoutError as e:
+        # Startup failures — print the reason, not a traceback
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
