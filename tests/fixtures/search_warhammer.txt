@@ -1,0 +1,16 @@
+Search results from SearchBot v3.00.13 by Ook, searching dll written by Ook, Based on Searchbot v2.22 by Dukelupus
+Searched 14 lists for "warhammer" , found 1000 matches. Enjoy!
+This list includes results from ALL the lists SearchBot v3.00.13 currently has, some of these servers may be offline.
+Always check to be sure the server you want to make a request from is actually in the channel, otherwise your request will have no effect.
+For easier searching, use sbClient script (also very fast local searches). You can get that script by typing @sbClient in the channel.
+
+!artemis_serv f73222c7950c | Warhammer 40K_ The Purging of Kadillus - Gav Thorpe.mobi ::INFO:: 5.09MB
+!artemis_serv e60b9f2104b3 | Warhammer 40K_ Fall of Damnos - Nick Kyme.mobi ::INFO:: 4.67MB
+!Ashurbanipal wLzfYssqwXcipxVs8UQztw - Games-Workshop - Warhammer Age of Sigmar - Soul Wars: Wrath of the Everchosen [eng]  (PDF) 44.7 MB
+!Ashurbanipal icrJKsa/adw/KYa0ACzKWg - Games Workshop Limited - Warhammer: Tomb Kings [eng]  (PDF) 28.0 MB - [Fantasy, Gaming, Role Playing & Fantasy]
+!Bsk Dan Abnett - Warhammer 40,000 - Penitent (Retail).epub ::INFO:: 2.19MB
+!Bsk Dan Abnett, Graham McNeill, Chris Wraight - Warhammer - The Hammer and the Eagle (s).epub ::INFO:: 2.54MB
+!Bsk Danie Ware - Warhammer 40,000 - The Rose in Darkness (s).epub ::INFO:: 680.86KB
+!Bsk Darius Hinks - Warhammer 40,000 - Ascension (Retail).epub ::INFO:: 2.54MB
+!Bsk Warhammer - [Heroes 03] - Sword of Vengeance - Chris Wraight (v1.0).epub ::INFO:: 1.17MB
+!Bsk Warhammer - [Heroes 03] - Sword of Vengeance - Chris Wraight (v1.0) (mobi).mobi ::INFO:: 1.98MB
