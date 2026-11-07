@@ -8,7 +8,7 @@ import zipfile
 import pytest
 
 import dcc
-from dcc import FileTooLargeError, extract_ebook, receive_dcc
+from dcc import BadArchiveError, FileTooLargeError, extract_ebook, receive_dcc
 
 from conftest import local_sender
 
@@ -76,7 +76,7 @@ def test_zip_with_lying_size_header_is_contained(downloads, make_zip, small_limi
     data[i + 24:i + 28] = struct.pack("<I", 100)
     zp.write_bytes(data)
 
-    with pytest.raises((FileTooLargeError, zipfile.BadZipFile)):
+    with pytest.raises((FileTooLargeError, BadArchiveError)):
         extract_ebook(zp, "liar")
     out = downloads / "liar.epub"
     assert not out.exists()

@@ -1,6 +1,6 @@
 # TODO
 
-Outstanding work, roughly in priority order. Security hardening (items 1–5) is done — see [Done](#done) at the bottom.
+Outstanding work, roughly in priority order. Security hardening and download reliability are done — see [Done](#done) at the bottom.
 
 ## Phase 0 — TUI backend prerequisites
 
@@ -34,51 +34,12 @@ The groundwork for the planned TUI. See [`docs/tui-plan.md`](docs/tui-plan.md) f
     - Track a dict of pending requests keyed by the expected sender (the `!Bot` nick, or the search bot for `@search`).
     - For each one, wait for an offer from that sender (long or no timeout, with cancel), and forward that bot's notices as events.
     - Keep the existing per-offer checks: sent directly to us, public IP, size limits.
-  - **Replaces** "Separate the timeouts" below. The connect and stall timeouts still apply to the actual transfer.
+  - The outer 60s catch-all is already gone, and transfers have their own connect and stall timeouts (`CONNECT_TIMEOUT`, `STALL_TIMEOUT` in `dcc.py`). What's left is the per-bot tracking and a longer offer wait.
 
 - [ ] **0.6 All output through logging**: `plugin.py`, `unix_socket.py`, `ebooks_agent.py`
   - **Problem:** once the TUI owns the terminal, a stray `print` breaks the screen.
   - **Fix:** route all status output through `logging`, and add a handler the TUI can attach for its Log buffer. Keep `print` only for the CLI's actual results.
   - **Replaces** "Consistent output" below.
-
-## Download reliability
-
-- [ ] **Separate the timeouts**: `agent.py` `search()` + `plugin.py` `search()` — *mostly replaced by [Phase 0.5](#phase-0--tui-backend-prerequisites); the connect and stall timeouts still apply*
-  - **Problem:** `EbooksAgent.search` wraps everything in one 60s `asyncio.timeout`: waiting for the search lock, waiting for an offer, *and* the download. The plugin also has its own 60s offer wait.
-    - A slow but healthy download gets cancelled partway through.
-    - A second search queued behind the lock can time out before it even starts.
-  - **Fix:**
-    - Use separate limits:
-      - offer wait (~60s, starting once *this* search holds the lock);
-      - connect timeout (~15s);
-      - a download *stall* timeout (no bytes for ~30s) instead of one limit on total time.
-    - Remove the outer catch-all timeout.
-
-- [ ] **Treat short transfers as failures**: `dcc.py` `receive_dcc()`
-  - **Problem:** if the sender disconnects early, the loop just `break`s and the partial file is returned as success.
-  - **Fix:** after the loop, if `received != filesize`, delete the file and raise an `IncompleteDownloadError(DownloadError)`.
-
-- [ ] **Connect timeout for DCC**: `dcc.py` `receive_dcc()`
-  - **Problem:** `asyncio.open_connection(ip, port)` has no timeout of its own, so a bot that's behind a firewall hangs until the outer timeout.
-  - **Fix:** wrap it in `asyncio.timeout(...)`. Can be done together with the timeout split above.
-
-- [ ] **Don't overwrite or destroy existing files**: `dcc.py` `_open_for_write()`, `receive_dcc()`, `extract_ebook()`
-  - **Problem:**
-    - Files are opened with `O_TRUNC`, so a new download with the same name silently replaces an existing book.
-    - If that download then fails, cleanup deletes the file, so the old copy is gone too.
-  - **Fix:**
-    - Download into a temporary `name.part` file (created with `O_EXCL`).
-    - When it's complete, `os.rename` it into place under a free name, for example `Dune (1).epub`.
-    - On failure, delete only the `.part` file.
-
-- [ ] **Handle the remaining errors**: `ebooks_agent.py` `_input_loop()`, `unix_socket.py` `handle()`
-  - **Problem:** only `TimeoutError` and `DownloadError` are caught.
-    - `ConnectionRefusedError` and other `OSError`s from the DCC connection, `zipfile.BadZipFile`, and the plain `ValueError` for an empty zip all go uncaught.
-    - In the CLI they end the whole program.
-    - In the socket handler the client hangs and the writer is never closed.
-  - **Fix:**
-    - In `dcc.py`, turn these into `DownloadError` subclasses: wrap `BadZipFile`, make "zip contains no files" a `DownloadError`, and wrap connection errors.
-    - In the socket handler, close the writer in a `finally` block.
 
 ## Connection lifecycle
 
@@ -114,10 +75,8 @@ The groundwork for the planned TUI. See [`docs/tui-plan.md`](docs/tui-plan.md) f
   - **Fix:** watch for an irc3 release that fixes it, or patch it locally, before upgrading Python.
 
 - [ ] **Unix socket input limits**: `unix_socket.py` `handle()`
-  - **Problem:**
-    - A line over 64 KiB makes `readline()` raise without being handled.
-    - A client that connects and never sends anything holds a handler open forever.
-  - **Fix:** put a timeout on `readline()`, catch `ValueError` / `LimitOverrunError`, and cap the length of a search term. Low risk now that only your own user can connect.
+  - **Problem:** a client that connects and never sends anything holds a handler open forever. (A line over 64 KiB no longer crashes the handler: it's logged and the connection is closed.)
+  - **Fix:** put a timeout on `readline()` and cap the length of a search term. Low risk now that only your own user can connect.
 
 - [ ] **Better names for extracted files**: `dcc.py` `extract_ebook()` — *replaced by [Phase 0.2](#phase-0--tui-backend-prerequisites) for search results*
   - **Problem:** extracted files are named after the raw search term, including any command prefix, for example `downloads/@search warhammer.txt`.
@@ -165,6 +124,14 @@ These were decided on purpose. Revisit them if the threat model changes.
 
 - [x] **Path traversal:** filenames from bots are cleaned up, kept inside `downloads/`, and symlinks are never followed (`O_NOFOLLOW`).
 - [x] **Offer filtering:** offers must be sent directly to our nick, arrive during an active search, come from a channel member (or the bot named in `!Bot`), and point at a public IP on port 1024 or above. Stale offers are no longer queued. Also fixed the `:Search` leading-colon bug in the event pattern.
+- [x] **Download reliability:**
+  - DCC connects time out after 15s (`CONNECT_TIMEOUT`) and transfers give up after 30s without data (`STALL_TIMEOUT`). There's no limit on total time, so slow but steady downloads finish.
+  - The outer 60s catch-all in `EbooksAgent.search` is gone. The 60s offer wait only starts once a search has its turn.
+  - A sender that hangs up early raises `IncompleteDownloadError` instead of returning a partial file as a success.
+  - Downloads and extractions go to a `name.<random>.part` file (`O_EXCL`), which is hard-linked into place under a free name (`Dune (1).epub`) only when complete. Existing files are never overwritten, and a failure only deletes our own `.part` file.
+  - Connection errors become `TransferError`, and corrupt, empty or encrypted zips become `BadArchiveError`. Both are `DownloadError`s.
+  - The CLI logs unexpected errors and keeps running. The socket handler answers `error: internal error` and always closes the connection.
+  - Tests in `tests/test_reliability.py`.
 - [x] **Size limits:** 100 MiB cap, free-disk check, never reads past the advertised size, zip bomb guards (header check plus counted streaming), and partial files are deleted when a download fails.
 - [x] **TLS:** IRC runs over port 6697, encrypt-only (see the accepted risks above).
 - [x] **Unix socket:** lives in `$XDG_RUNTIME_DIR` (or a private fallback folder), created as 0600, accepts the same user only, and is cleaned up on exit.

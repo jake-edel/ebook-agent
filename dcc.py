@@ -1,12 +1,15 @@
 """DCC file transfer and ebook extraction."""
 
 import asyncio
+import errno
 import ipaddress
 import os
 import re
+import secrets
 import shutil
 import struct
 import zipfile
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,6 +30,13 @@ MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024  # 100 MiB
 _DISK_HEADROOM_BYTES = 512 * 1024 * 1024  # 512 MiB
 _CHUNK_SIZE = 64 * 1024
 
+# How long to wait for the sender to accept our TCP connection
+CONNECT_TIMEOUT = 15  # seconds
+# Give up if the sender goes this long without sending a single byte.
+# A limit on *idle* time rather than total time, so a slow but steady
+# transfer is never cut off partway through.
+STALL_TIMEOUT = 30  # seconds
+
 
 class DownloadError(Exception):
     """Base class for any refusal or failure while fetching a file."""
@@ -38,6 +48,18 @@ class UnsafeFilenameError(DownloadError, ValueError):
 
 class FileTooLargeError(DownloadError, ValueError):
     """Raised when a download or extracted file would exceed MAX_DOWNLOAD_BYTES or free disk."""
+
+
+class TransferError(DownloadError):
+    """Raised when the DCC connection can't be made, stalls, or breaks mid-transfer."""
+
+
+class IncompleteDownloadError(TransferError):
+    """Raised when the sender hangs up before sending every byte it advertised."""
+
+
+class BadArchiveError(DownloadError, ValueError):
+    """Raised when a downloaded zip is corrupt, unsupported, or empty."""
 
 
 def safe_download_path(name: str) -> Path:
@@ -72,12 +94,56 @@ def safe_download_path(name: str) -> Path:
 
 
 def _open_for_write(path: Path):
-    """Open a file for binary writing without following a symlink at that path."""
-    # O_NOFOLLOW makes open() fail if `path` is a symlink, closing the gap
-    # between the resolve() check above and the actual write
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+    """Create a new file for binary writing. Never truncates or follows an existing path."""
+    # O_EXCL: fail if anything already exists at `path` (including a symlink,
+    # dangling or not), so we can never clobber an existing file.
+    # O_NOFOLLOW: belt and braces against symlinks on systems where O_EXCL
+    # alone doesn't cover them.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
     fd = os.open(path, flags, 0o644)
     return os.fdopen(fd, "wb")
+
+
+def _open_part(dest: Path):
+    """Create a fresh temporary file next to `dest` to download into.
+
+    Returns (part_path, file). The random tag means a leftover .part from a
+    crashed run, or a concurrent download of the same name, never collides.
+    """
+    part = dest.with_name(f"{dest.name}.{secrets.token_hex(4)}.part")
+    return part, _open_for_write(part)
+
+
+# Filesystems that can't hard-link (FAT, some FUSE/network mounts)
+_NO_LINK_ERRNOS = {errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EMLINK}
+
+
+def _finalize(part: Path, dest: Path) -> Path:
+    """Move a completed .part file to `dest`, or "name (1).ext" etc. if taken.
+
+    Never overwrites anything: an existing book with the same name is kept,
+    and the new file gets the first free numbered name. Returns the final path.
+    """
+    for n in range(1000):
+        candidate = dest if n == 0 else dest.with_name(f"{dest.stem} ({n}){dest.suffix}")
+        try:
+            # link() is atomic and refuses to replace an existing path — unlike
+            # rename(), which silently overwrites
+            os.link(part, candidate, follow_symlinks=False)
+        except FileExistsError:
+            continue
+        except OSError as e:
+            if e.errno not in _NO_LINK_ERRNOS:
+                raise
+            # No hard links here: fall back to check-then-rename. There's a
+            # tiny race window, but only against our own processes.
+            if os.path.lexists(candidate):
+                continue
+            os.rename(part, candidate)
+            return candidate
+        part.unlink()
+        return candidate
+    raise DownloadError(f"No free filename for {dest.name} in {dest.parent}")
 
 # Handles both quoted filenames (with spaces) and bare unquoted filenames.
 # Some bots wrap filenames in quotes: DCC SEND "my file.epub" ip port size
@@ -152,7 +218,13 @@ def parse_dcc_offer(text: str) -> DccOffer | None:
 _EBOOK_EXTS = {".txt", ".epub", ".mobi", ".pdf", ".doc", ".docx", ".rtf", ".azw", ".azw3"}
 
 
-async def receive_dcc(ip: str, port: int, filesize: int, dest: Path):
+async def receive_dcc(ip: str, port: int, filesize: int, dest: Path) -> Path:
+    """Download a DCC file into `dest`'s directory and return where it was saved.
+
+    The returned path is `dest`, or a numbered variant like "Dune (1).epub" if
+    a file by that name already exists. Raises a DownloadError subclass on any
+    failure, in which case nothing is left on disk.
+    """
     # Re-check here so callers can't bypass sanitization by passing a raw path
     if dest.resolve().parent != DOWNLOADS_DIR:
         raise UnsafeFilenameError(f"Refusing to write outside downloads dir: {dest}")
@@ -161,31 +233,62 @@ async def receive_dcc(ip: str, port: int, filesize: int, dest: Path):
         raise FileTooLargeError(f"{filesize:,} bytes exceeds the {MAX_DOWNLOAD_BYTES:,}-byte limit")
     _check_disk_space(filesize)
 
-    # Open a direct TCP connection to the sender (bypasses IRC server entirely)
-    reader, writer = await asyncio.open_connection(ip, port)
-    received = 0
+    # Open a direct TCP connection to the sender (bypasses IRC server entirely).
+    # Done before creating any file, so a dead sender leaves nothing behind.
     try:
-        # Open destination file for writing in binary mode (never via a symlink)
-        with _open_for_write(dest) as file:
+        async with asyncio.timeout(CONNECT_TIMEOUT):
+            reader, writer = await asyncio.open_connection(ip, port)
+    except TimeoutError:
+        raise TransferError(
+            f"Could not connect to {ip}:{port} within {CONNECT_TIMEOUT}s"
+        ) from None
+    except OSError as e:
+        raise TransferError(f"Could not connect to {ip}:{port}: {e}") from e
+
+    part = None
+    try:
+        # Download into a temporary .part file (never via a symlink); it only
+        # gets the real name once every byte has arrived
+        part, file = _open_part(dest)
+        received = 0
+        with file:
             while received < filesize:
-                # Read a chunk of bytes from the connection — never more than the
-                # bytes still owed, so a sender that keeps streaming past the size
-                # it advertised can't make us write a byte more than agreed
-                chunk = await reader.read(min(_CHUNK_SIZE, filesize - received))
-                if not chunk:
-                    break
-                # Write chunk to file, and also ack back to the sender
-                # how many total bytes we've received so far
-                file.write(chunk)
-                received += len(chunk)
-                writer.write(struct.pack("!I", received))
-                # Flush the write buffer — actually send the ack over the wire
-                await writer.drain()
-    except BaseException:
-        # Failed or cancelled (e.g. timeout) — don't leave a partial file behind
-        dest.unlink(missing_ok=True)
-        raise
+                # The stall timeout restarts for every chunk: it limits idle
+                # time, not the length of the whole transfer
+                async with asyncio.timeout(STALL_TIMEOUT):
+                    # Read a chunk of bytes from the connection — never more than the
+                    # bytes still owed, so a sender that keeps streaming past the size
+                    # it advertised can't make us write a byte more than agreed
+                    chunk = await reader.read(min(_CHUNK_SIZE, filesize - received))
+                    if not chunk:
+                        break
+                    # Write chunk to file, and also ack back to the sender
+                    # how many total bytes we've received so far
+                    file.write(chunk)
+                    received += len(chunk)
+                    writer.write(struct.pack("!I", received))
+                    # Flush the write buffer — actually send the ack over the wire
+                    await writer.drain()
+
+        if received != filesize:
+            raise IncompleteDownloadError(
+                f"Sender closed the connection after {received:,} of {filesize:,} bytes"
+            )
+        final = _finalize(part, dest)
+        part = None  # it's been moved into place; nothing to clean up
+        return final
+    except TimeoutError:
+        # TimeoutError is a subclass of OSError, so this must come first
+        raise TransferError(
+            f"Transfer stalled: no data from {ip}:{port} for {STALL_TIMEOUT}s"
+        ) from None
+    except OSError as e:
+        raise TransferError(f"Transfer from {ip}:{port} failed: {e}") from e
     finally:
+        # Failed or cancelled — remove only our own .part file. Any existing
+        # file at `dest` was never touched.
+        if part is not None:
+            part.unlink(missing_ok=True)
         writer.close()
         try:
             await writer.wait_closed()
@@ -201,10 +304,33 @@ def _check_disk_space(needed: int):
         )
 
 
+# What zipfile raises for archives it can't read: corrupt or truncated data
+# (BadZipFile, zlib.error, EOFError), unsupported compression methods
+# (NotImplementedError), and password-protected entries (RuntimeError)
+_ZIP_ERRORS = (zipfile.BadZipFile, zlib.error, EOFError, NotImplementedError, RuntimeError)
+
+
 def extract_ebook(zip_path: Path, term: str) -> Path:
+    """Extract the best ebook candidate from a zip, delete the zip, return the ebook's path.
+
+    Like receive_dcc, never overwrites an existing file. Raises BadArchiveError
+    if the zip can't be read.
+    """
     # Most ebooks come uncompressed directly over DCC. This handles the minority
     # of bots that bundle files in a zip — flexible, but rarely needed in practice.
+    try:
+        out_path = _extract(zip_path, term)
+    except _ZIP_ERRORS as e:
+        raise BadArchiveError(f"Could not extract {zip_path.name}: {e}") from e
 
+    # Let go of the zip now that we've extracted what we need
+    zip_path.unlink()
+
+    # Let the calling function know where the file is
+    return out_path
+
+
+def _extract(zip_path: Path, term: str) -> Path:
     with zipfile.ZipFile(zip_path) as file:
         # Get all members, skipping any directories
         members = [m for m in file.infolist() if not m.is_dir()]
@@ -215,7 +341,7 @@ def extract_ebook(zip_path: Path, term: str) -> Path:
         members.sort(key=lambda m: (Path(m.filename).suffix.lower() not in _EBOOK_EXTS, m.filename))
 
         if not members:
-            raise ValueError(f"Zip {zip_path.name} contains no files")
+            raise BadArchiveError(f"Zip {zip_path.name} contains no files")
 
         # Target only the first file found — the best ebook candidate after sorting
         target = members[0]
@@ -230,14 +356,16 @@ def extract_ebook(zip_path: Path, term: str) -> Path:
             )
         _check_disk_space(target.file_size)
 
-        # Write the file to our downloads directory using the sanitized search term as the filename.
-        # Only the search term and extension are used — never the member's own path inside the zip
-        out_path = safe_download_path(f"{term}{suffix}")
+        # Name the output after the sanitized search term plus the extension —
+        # never the member's own path inside the zip
+        dest = safe_download_path(f"{term}{suffix}")
+        part = None
         try:
             # Zip bomb guard, part 2: the header can lie, so stream in chunks
             # and count what actually comes out rather than read() it all into memory
             written = 0
-            with file.open(target) as src, _open_for_write(out_path) as out:
+            part, out = _open_part(dest)
+            with file.open(target) as src, out:
                 while chunk := src.read(_CHUNK_SIZE):
                     written += len(chunk)
                     if written > MAX_DOWNLOAD_BYTES:
@@ -246,12 +374,9 @@ def extract_ebook(zip_path: Path, term: str) -> Path:
                             f"the {MAX_DOWNLOAD_BYTES:,}-byte limit"
                         )
                     out.write(chunk)
-        except BaseException:
-            out_path.unlink(missing_ok=True)
-            raise
-
-    # Let go of the zip now that we've extracted what we need
-    zip_path.unlink()
-
-    # Let the calling function know where the file is
-    return out_path
+            final = _finalize(part, dest)
+            part = None
+            return final
+        finally:
+            if part is not None:
+                part.unlink(missing_ok=True)

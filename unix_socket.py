@@ -113,40 +113,48 @@ def _peer_uid(writer: asyncio.StreamWriter) -> int | None:
 # without changing its signature — asyncio expects (reader, writer) only
 def _make_handler(agent):
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        # Directory and file permissions should already keep other users out;
-        # verify the connecting process's UID anyway in case they're loosened
-        uid = _peer_uid(writer)
-        if uid is not None and uid != os.getuid():
-            log.warning("Rejected socket connection from uid %s", uid)
-            writer.close()
-            return
-
-        # Read line by line, decode bytes to text
-        data = await reader.readline()
-        term = data.decode().strip()
-
-        # Nothing there — close up shop
-        if not term:
-            writer.close()
-            return
-
         try:
-            # Pass the search term to our agent
+            # Directory and file permissions should already keep other users out;
+            # verify the connecting process's UID anyway in case they're loosened
+            uid = _peer_uid(writer)
+            if uid is not None and uid != os.getuid():
+                log.warning("Rejected socket connection from uid %s", uid)
+                return
+
+            # Read line by line, decode bytes to text
+            data = await reader.readline()
+            term = data.decode().strip()
+
+            # Nothing there — close up shop
+            if not term:
+                return
+
+            try:
+                # Pass the search term to our agent
+                path = await agent.search(term)
+                reply = f"{path}\n"
+            except (TimeoutError, DownloadError) as e:
+                reply = f"error: {e}\n"
+            except Exception:
+                # A bug, not a normal failure — but the client still gets an
+                # answer instead of hanging, and the details go to the log
+                log.exception("Search for %r failed unexpectedly", term)
+                reply = "error: internal error (see agent log)\n"
+
             # Write the response back to the external source
-            path = await agent.search(term)
-            writer.write(f"{path}\n".encode())
-        except (TimeoutError, DownloadError) as e:
-            writer.write(f"error: {e}\n".encode())
-
-        try:
-            # Flush once we're done — caller has probably already closed their end by now
-            await writer.drain()
-        except ConnectionResetError:
-            # client (e.g. socat) closed its end before drain finished
-            # response was already written
-            pass
-
-        writer.close()
+            writer.write(reply.encode())
+            try:
+                # Flush once we're done — caller has probably already closed their end by now
+                await writer.drain()
+            except ConnectionError:
+                # client (e.g. socat) closed its end before drain finished
+                pass
+        except Exception:
+            # e.g. an oversized line or undecodable bytes from the client
+            log.exception("Socket connection failed")
+        finally:
+            # Always release the connection, whatever happened above
+            writer.close()
 
     return handle
 

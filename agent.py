@@ -91,5 +91,9 @@ class EbooksAgent:
     async def search(self, term: str) -> Path:
         if self._plugin is None:
             raise RuntimeError("Not connected — call start() first")
-        async with asyncio.timeout(60):
-            return await self._plugin.search(term)
+        # No catch-all timeout here: each stage has its own limit instead.
+        # The plugin waits 60s for an offer (counted from when *this* search
+        # gets its turn, not while queued behind another), and the transfer
+        # has connect and stall timeouts — so a slow but healthy download
+        # isn't cut off partway through.
+        return await self._plugin.search(term)

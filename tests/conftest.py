@@ -77,6 +77,7 @@ def received(monkeypatch):
     async def fake_receive(ip, port, size, dest):
         calls.append((ip, port, size, dest))
         dest.write_bytes(b"x")
+        return dest
 
     monkeypatch.setattr(plugin, "receive_dcc", fake_receive)
     return calls

@@ -136,7 +136,8 @@ class EbooksPlugin:
             )
             # If we've made it this far, we have a vetted offer
             # Lets receive it, and extract if its a zip
-            await receive_dcc(offer.ip, offer.port, offer.filesize, dest)
+            # May come back as e.g. "Dune (1).epub" if the name was taken
+            dest = await receive_dcc(offer.ip, offer.port, offer.filesize, dest)
             log.info("Download complete: %s", dest)
             if dest.suffix.lower() == ".zip":
                 dest = extract_ebook(dest, term)

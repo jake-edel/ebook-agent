@@ -8,6 +8,8 @@ from agent import EbooksAgent
 from dcc import DownloadError
 from unix_socket import unix_socket
 
+log = logging.getLogger(__name__)
+
 
 async def _input_loop(agent: EbooksAgent):
     # Continuously listen for inputs from an interactive shell
@@ -30,6 +32,10 @@ async def _input_loop(agent: EbooksAgent):
             print(path)
         except (TimeoutError, DownloadError) as e:
             print(f"Error: {e}")
+        except Exception:
+            # Anything unexpected is a bug, but one failed search shouldn't
+            # end the whole session — log the traceback and keep going
+            log.exception("Search for %r failed unexpectedly", term)
 
 
 async def _main():
