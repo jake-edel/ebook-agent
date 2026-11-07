@@ -15,7 +15,7 @@
 host = "irc.irchighway.net"
 # Must be a TLS port: the connection always uses TLS (encrypt-only, see README)
 port = 6697
-nick = "pt_bookbot"
+nick = "ebooks_cli"
 channel = "#ebooks"
 # Seconds to wait for the connection and channel join at startup
 connect_timeout = 30
