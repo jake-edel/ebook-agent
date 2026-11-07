@@ -13,8 +13,13 @@ import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
-DOWNLOADS_DIR = (Path(__file__).parent / "downloads").resolve()
-DOWNLOADS_DIR.mkdir(exist_ok=True)
+from config import DownloadsConfig
+
+# Module-level settings, initialized from the config defaults. configure()
+# replaces them at startup with the loaded config; tests monkeypatch them.
+_DEFAULTS = DownloadsConfig()
+
+DOWNLOADS_DIR = _DEFAULTS.dir.resolve()
 
 # Characters that are unsafe or troublesome in filenames: path separators,
 # Windows-reserved punctuation, and ASCII control chars (incl. NUL)
@@ -25,17 +30,29 @@ _MAX_NAME_BYTES = 200
 # Largest file we'll accept, either over DCC or extracted from a zip.
 # Ebooks are rarely more than a few MB; big illustrated PDFs can reach tens.
 # Also keeps DCC's 32-bit byte-count acks far from overflowing (4 GiB).
-MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024  # 100 MiB
+MAX_DOWNLOAD_BYTES = _DEFAULTS.max_size_bytes
 # Leave this much free disk space after a download
-_DISK_HEADROOM_BYTES = 512 * 1024 * 1024  # 512 MiB
+_DISK_HEADROOM_BYTES = _DEFAULTS.disk_headroom_bytes
 _CHUNK_SIZE = 64 * 1024
 
 # How long to wait for the sender to accept our TCP connection
-CONNECT_TIMEOUT = 15  # seconds
+CONNECT_TIMEOUT = _DEFAULTS.connect_timeout  # seconds
 # Give up if the sender goes this long without sending a single byte.
 # A limit on *idle* time rather than total time, so a slow but steady
 # transfer is never cut off partway through.
-STALL_TIMEOUT = 30  # seconds
+STALL_TIMEOUT = _DEFAULTS.stall_timeout  # seconds
+
+
+def configure(cfg: DownloadsConfig):
+    """Apply download settings and create the downloads directory. Call once at startup."""
+    global DOWNLOADS_DIR, MAX_DOWNLOAD_BYTES, _DISK_HEADROOM_BYTES, CONNECT_TIMEOUT, STALL_TIMEOUT
+    # Resolve symlinks now: safe_download_path compares resolved paths against this
+    cfg.dir.mkdir(parents=True, exist_ok=True)
+    DOWNLOADS_DIR = cfg.dir.resolve()
+    MAX_DOWNLOAD_BYTES = cfg.max_size_bytes
+    _DISK_HEADROOM_BYTES = cfg.disk_headroom_bytes
+    CONNECT_TIMEOUT = cfg.connect_timeout
+    STALL_TIMEOUT = cfg.stall_timeout
 
 
 class DownloadError(Exception):
@@ -297,6 +314,8 @@ async def receive_dcc(ip: str, port: int, filesize: int, dest: Path) -> Path:
 
 
 def _check_disk_space(needed: int):
+    # Normally created by configure(); make sure it exists for direct callers too
+    DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
     free = shutil.disk_usage(DOWNLOADS_DIR).free
     if free - needed < _DISK_HEADROOM_BYTES:
         raise FileTooLargeError(

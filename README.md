@@ -1,11 +1,11 @@
 # ebooks-agent
 
 A Python agent that connects to IRCHighway's `#ebooks` channel, sends a search term, receives the result via DCC file transfer, and saves the ebook to disk.
-
 ## Requirements
 
 - Python 3.11+
 - `irc3`
+
 
 ## Setup
 
@@ -34,6 +34,32 @@ Skip activation entirely by calling the venv's Python directly:
 ```
 
 After pulling changes that touch `requirements.txt`, re-run `pip install -r requirements.txt` with the venv active.
+
+## Configuration
+
+Everything works out of the box with the defaults. To change something, copy the template and edit it:
+
+```bash
+cp config.example.toml config.toml
+```
+
+`config.toml` is gitignored, so your local settings stay out of commits. `config.example.toml` lists every setting with its default and what it does: IRC host, nick and channel, the timeouts, the size limits, and the downloads folder.
+
+Settings are applied in this order, each overriding the one before:
+
+1. Built-in defaults
+2. The config file. That's `config.toml` next to `ebooks_agent.py`, or the file you pass with `--config PATH`, or the one named in `$EBOOKS_CONFIG`
+3. Environment variables named `EBOOKS_<SECTION>_<KEY>`, for example `EBOOKS_IRC_NICK=my_nick` or `EBOOKS_DOWNLOADS_DIR=~/Books`
+4. Command-line flags: `--nick` and `--downloads`
+
+```bash
+python ebooks_agent.py --nick my_nick --downloads ~/Books
+EBOOKS_SEARCH_OFFER_TIMEOUT=120 python ebooks_agent.py
+```
+
+A relative `downloads.dir` in the config file is relative to that file. From an environment variable or flag, it's relative to the current directory.
+
+Mistakes are caught at startup with a clear message, and the agent exits without connecting. That covers unknown settings (typos like `nik`), wrong types, and out-of-range values. TLS can't be turned off.
 
 ## Usage
 
@@ -96,7 +122,9 @@ The tests never touch the network or your real `downloads/` folder — each test
 ## Project structure
 
 ```
-ebooks_agent.py   — CLI entry point and input loop
+ebooks_agent.py   — CLI entry point, flags and input loop
+config.py         — loads and validates settings (defaults, config.toml, env, flags)
+config.example.toml — documented template for config.toml
 agent.py          — EbooksAgent class, owns the IRC connection lifecycle
 plugin.py         — irc3 plugin, handles IRC events and DCC offers
 unix_socket.py    — Unix socket server for external input
@@ -110,12 +138,12 @@ docs/tui-plan.md  — design and phases for the planned TUI
 
 ## Output
 
-Downloaded files are saved to the `downloads/` directory alongside the script, named after the search term.
+Downloaded files are saved to the `downloads/` directory alongside the script (or `downloads.dir` from the config), named after the search term.
 
 ## Notes
 
-- The default nick is `pt_bookbot`. Pass a different nick to `EbooksAgent(nick=...)` if needed.
-- Timeouts:
+- The default nick is `pt_bookbot`. Change it with `--nick`, `EBOOKS_IRC_NICK`, or `nick` in `config.toml`.
+- Timeouts (all configurable):
   - 30 seconds to connect to IRC.
   - 60 seconds for a bot to offer the file.
   - 15 seconds to connect to the bot for the transfer.

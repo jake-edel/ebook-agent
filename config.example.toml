@@ -1,0 +1,37 @@
+# ebooks-agent configuration
+#
+# Copy this file to config.toml (which is gitignored) and change what you need.
+# Every setting is optional: anything you leave out uses the default shown here.
+#
+# Where settings come from, each overriding the one before:
+#   1. the defaults below
+#   2. this file: config.toml next to ebooks_agent.py, or --config PATH, or $EBOOKS_CONFIG
+#   3. environment variables named EBOOKS_<SECTION>_<KEY>, e.g. EBOOKS_IRC_NICK=my_nick
+#   4. command-line flags: --nick, --downloads
+#
+# Unknown sections or settings are an error, so typos don't go unnoticed.
+
+[irc]
+host = "irc.irchighway.net"
+# Must be a TLS port: the connection always uses TLS (encrypt-only, see README)
+port = 6697
+nick = "pt_bookbot"
+channel = "#ebooks"
+# Seconds to wait for the connection and channel join at startup
+connect_timeout = 30
+
+[search]
+# Seconds to wait for a bot to offer the file, once a search has its turn
+offer_timeout = 60
+
+[downloads]
+# Where files are saved. Relative paths are relative to this file; ~ works.
+dir = "downloads"
+# Largest file accepted, over DCC or extracted from a zip (max 4095)
+max_size_mib = 100
+# Refuse a download that would leave less free disk space than this
+disk_headroom_mib = 512
+# Seconds to wait for a bot to accept the DCC connection
+connect_timeout = 15
+# Give up on a transfer after this many seconds without data
+stall_timeout = 30

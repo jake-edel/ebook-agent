@@ -6,6 +6,7 @@ import pytest
 
 import plugin
 from agent import EbooksAgent
+from config import Config, IrcConfig
 from dcc import MAX_DOWNLOAD_BYTES, FileTooLargeError, InvalidOfferError
 
 from conftest import OUR_NICK, PUBLIC_IP, ip_int, mask, offer_text
@@ -144,7 +145,7 @@ def test_raw_irc_lines(received, monkeypatch, term, line, accepted):
     monkeypatch.setattr(plugin, "extract_ebook", lambda dest, term: dest)
 
     async def go():
-        bot = EbooksAgent(nick=OUR_NICK)._build_bot()
+        bot = EbooksAgent(Config(irc=IrcConfig(nick=OUR_NICK)))._build_bot()
         bot.privmsg = lambda *a, **k: None
         p = bot.get_plugin(plugin.EbooksPlugin)
         # Server's NAMES reply populates the channel member list

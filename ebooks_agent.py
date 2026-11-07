@@ -1,10 +1,13 @@
 """CLI entry point — start the agent and accept search terms interactively."""
 
+import argparse
 import asyncio
 import logging
 import sys
+from pathlib import Path
 
 from agent import EbooksAgent
+from config import Config, ConfigError, load_config
 from dcc import DownloadError
 from unix_socket import unix_socket
 
@@ -38,13 +41,30 @@ async def _input_loop(agent: EbooksAgent):
             log.exception("Search for %r failed unexpectedly", term)
 
 
-async def _main():
-    # Python's build in logging library
-    # Minimum log level is INFO (DEBUG messages are suppress)
-    # Format defines a message template.
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+def _parse_args(argv=None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Search #ebooks on IRCHighway and download the results.",
+        epilog="Settings are read from config.toml (see config.example.toml), "
+               "then EBOOKS_* environment variables, then these flags.",
+    )
+    parser.add_argument("--config", type=Path, metavar="PATH",
+                        help="config file to use (default: config.toml next to this script, "
+                             "or $EBOOKS_CONFIG)")
+    parser.add_argument("--nick", help="IRC nick to connect as")
+    parser.add_argument("--downloads", metavar="DIR", help="directory to save files in")
+    return parser.parse_args(argv)
+
+
+def _load(args: argparse.Namespace) -> Config:
+    return load_config(
+        path=args.config,
+        overrides={("irc", "nick"): args.nick, ("downloads", "dir"): args.downloads},
+    )
+
+
+async def _main(config: Config):
     # Instantiate our ebooks agent
-    agent = EbooksAgent()
+    agent = EbooksAgent(config)
     # Wait for the agent to start and connect to the server
     # We don't want to handle any input until it's ready to receive
     await agent.start()
@@ -69,8 +89,18 @@ async def _main():
 # Detects whether this module was run as such
 # rather than imported into another. 
 if __name__ == "__main__":
+    # Python's build in logging library
+    # Minimum log level is INFO (DEBUG messages are suppress)
+    # Format defines a message template.
+    # Set up before loading the config, so config warnings are shown too
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     try:
-        asyncio.run(_main())
+        config = _load(_parse_args())
+    except ConfigError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(2)
+    try:
+        asyncio.run(_main(config))
     except KeyboardInterrupt:
         pass
     except TimeoutError as e:

@@ -25,7 +25,6 @@ The groundwork for the planned TUI. See [`docs/tui-plan.md`](docs/tui-plan.md) f
 
 - [ ] **0.4 Progress callback**: `dcc.py` `receive_dcc()`
   - **What:** an optional `on_progress(received, total)` callback, emitted as `Progress` events.
-
 - [ ] **0.5 Track requests per bot instead of one global lock**: `plugin.py`
   - **Problem:**
     - Bots queue requests ("you are in queue position N"), and offers can arrive minutes later.
@@ -62,10 +61,6 @@ The groundwork for the planned TUI. See [`docs/tui-plan.md`](docs/tui-plan.md) f
 
 ## Robustness / polish
 
-- [ ] **Configuration**
-  - **Problem:** the host, nick, channel, timeouts, `MAX_DOWNLOAD_BYTES` and the downloads directory are all hard-coded.
-  - **Fix:** use a small config file (TOML; `tomllib` is built into Python) and/or environment variables and CLI flags, for example `--nick`, `--downloads`.
-
 - [ ] **Pin dependencies**
   - **Problem:** `requirements.txt` (`irc3`) and `requirements-dev.txt` (`pytest`) don't specify versions.
   - **Fix:** pin known-good versions (`irc3==1.1.12` at the time of writing), or add a lock file.
@@ -85,10 +80,6 @@ The groundwork for the planned TUI. See [`docs/tui-plan.md`](docs/tui-plan.md) f
 - [ ] **Consistent output** — *replaced by [Phase 0.6](#phase-0--tui-backend-prerequisites)*
   - **Problem:** status messages are a mix of `print` (in `plugin.py`, `unix_socket.py` and `ebooks_agent.py`) and `logging`.
   - **Fix:** use `logging` for status and keep `print` only for the CLI's actual results.
-
-- [ ] **No module-import side effects**: `dcc.py`
-  - **Problem:** `DOWNLOADS_DIR.mkdir()` runs as soon as the module is imported.
-  - **Fix:** create the folder lazily (on first download) or at startup.
 
 - [ ] **Encapsulation**: `agent.py`
   - **Problem:** `agent.py` reaches into the plugin's private `_connected` attribute.
@@ -124,6 +115,8 @@ These were decided on purpose. Revisit them if the threat model changes.
 
 - [x] **Path traversal:** filenames from bots are cleaned up, kept inside `downloads/`, and symlinks are never followed (`O_NOFOLLOW`).
 - [x] **Offer filtering:** offers must be sent directly to our nick, arrive during an active search, come from a channel member (or the bot named in `!Bot`), and point at a public IP on port 1024 or above. Stale offers are no longer queued. Also fixed the `:Search` leading-colon bug in the event pattern.
+- [x] **Configuration:** `config.py` loads the built-in defaults, then `config.toml` (or `--config`, or `$EBOOKS_CONFIG`), then `EBOOKS_<SECTION>_<KEY>` environment variables, then the `--nick` and `--downloads` flags. Unknown keys, wrong types and out-of-range values stop startup with a clear message. `config.example.toml` is the committed, documented template, and `config.toml` is gitignored. Tests in `tests/test_config.py`.
+- [x] **No module-import side effects:** `dcc.py` no longer creates `downloads/` on import. `dcc.configure()` creates it at startup.
 - [x] **Download reliability:**
   - DCC connects time out after 15s (`CONNECT_TIMEOUT`) and transfers give up after 30s without data (`STALL_TIMEOUT`). There's no limit on total time, so slow but steady downloads finish.
   - The outer 60s catch-all in `EbooksAgent.search` is gone. The 60s offer wait only starts once a search has its turn.
