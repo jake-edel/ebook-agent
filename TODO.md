@@ -20,7 +20,7 @@ The groundwork for the planned TUI. See [`docs/tui-plan.md`](docs/tui-plan.md) f
 
 - [ ] **0.3 Event stream**: `agent.py`, `plugin.py`
   - **What:** an asyncio queue of typed events: `Connected`, `Disconnected`, `BotNotice`, `OfferAccepted`, `Progress`, `Completed`, `Failed`.
-  - **Why:** the CLI can ignore them; the TUI renders them.
+  - **Why:** the headless mode just logs them; the TUI renders them.
   - **Also capture** NOTICE and PRIVMSG messages from bots we're waiting on, for queue position and "file not found" messages.
 
 - [ ] **0.4 Progress callback**: `dcc.py` `receive_dcc()`
@@ -37,7 +37,8 @@ The groundwork for the planned TUI. See [`docs/tui-plan.md`](docs/tui-plan.md) f
 
 - [ ] **0.6 All output through logging**: `plugin.py`, `unix_socket.py`, `ebooks_agent.py`
   - **Problem:** once the TUI owns the terminal, a stray `print` breaks the screen.
-  - **Fix:** route all status output through `logging`, and add a handler the TUI can attach for its Log buffer. Keep `print` only for the CLI's actual results.
+  - **Fix:** route all status output through `logging`, and add a handler the TUI can attach for its Log buffer.
+  - **Status:** mostly done. Removing the prompt turned the remaining status `print`s into log lines. The only `print`s left are startup errors to stderr in `ebooks_agent.py`. Still to do: the handler the TUI attaches.
   - **Replaces** "Consistent output" below.
 
 ## Connection lifecycle
@@ -77,10 +78,6 @@ The groundwork for the planned TUI. See [`docs/tui-plan.md`](docs/tui-plan.md) f
   - **Problem:** extracted files are named after the raw search term, including any command prefix, for example `downloads/@search warhammer.txt`.
   - **Fix:** strip `@search ` or `!Bot ` prefixes. For real books, consider keeping the name from inside the zip (after `safe_download_path`).
 
-- [ ] **Consistent output** — *replaced by [Phase 0.6](#phase-0--tui-backend-prerequisites)*
-  - **Problem:** status messages are a mix of `print` (in `plugin.py`, `unix_socket.py` and `ebooks_agent.py`) and `logging`.
-  - **Fix:** use `logging` for status and keep `print` only for the CLI's actual results.
-
 - [ ] **Encapsulation**: `agent.py`
   - **Problem:** `agent.py` reaches into the plugin's private `_connected` attribute.
   - **Fix:** expose a public `wait_connected()` method on the plugin.
@@ -115,6 +112,7 @@ These were decided on purpose. Revisit them if the threat model changes.
 
 - [x] **Path traversal:** filenames from bots are cleaned up, kept inside `downloads/`, and symlinks are never followed (`O_NOFOLLOW`).
 - [x] **Offer filtering:** offers must be sent directly to our nick, arrive during an active search, come from a channel member (or the bot named in `!Bot`), and point at a public IP on port 1024 or above. Stale offers are no longer queued. Also fixed the `:Search` leading-colon bug in the event pattern.
+- [x] **No interactive prompt:** the `search>` prompt is gone. `ebooks_agent.py` runs in the foreground, logs requests and results, takes searches only over the Unix socket, and exits cleanly on Ctrl+C or SIGTERM. It no longer needs stdin, so it runs fine under `nohup`, systemd or `< /dev/null`. If the socket can't be opened, startup fails instead of leaving an agent nothing can reach. Tests in `tests/test_main.py`.
 - [x] **Configuration:** `config.py` loads the built-in defaults, then `config.toml` (or `--config`, or `$EBOOKS_CONFIG`), then `EBOOKS_<SECTION>_<KEY>` environment variables, then the `--nick` and `--downloads` flags. Unknown keys, wrong types and out-of-range values stop startup with a clear message. `config.example.toml` is the committed, documented template, and `config.toml` is gitignored. Tests in `tests/test_config.py`.
 - [x] **No module-import side effects:** `dcc.py` no longer creates `downloads/` on import. `dcc.configure()` creates it at startup.
 - [x] **Download reliability:**
@@ -123,7 +121,7 @@ These were decided on purpose. Revisit them if the threat model changes.
   - A sender that hangs up early raises `IncompleteDownloadError` instead of returning a partial file as a success.
   - Downloads and extractions go to a `name.<random>.part` file (`O_EXCL`), which is hard-linked into place under a free name (`Dune (1).epub`) only when complete. Existing files are never overwritten, and a failure only deletes our own `.part` file.
   - Connection errors become `TransferError`, and corrupt, empty or encrypted zips become `BadArchiveError`. Both are `DownloadError`s.
-  - The CLI logs unexpected errors and keeps running. The socket handler answers `error: internal error` and always closes the connection.
+  - Unexpected errors are logged, the socket handler answers `error: internal error`, and it always closes the connection.
   - Tests in `tests/test_reliability.py`.
 - [x] **Size limits:** 100 MiB cap, free-disk check, never reads past the advertised size, zip bomb guards (header check plus counted streaming), and partial files are deleted when a download fails.
 - [x] **TLS:** IRC runs over port 6697, encrypt-only (see the accepted risks above).

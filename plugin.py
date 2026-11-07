@@ -54,7 +54,7 @@ class EbooksPlugin:
         self.bot.join(self.channel)
         # Signal to the parent that we're done with the connected lifecycle
         self._connected.set()
-        print(f"Connected to {self.bot.config.host} and joined {self.channel}")
+        log.info("Connected to %s and joined %s", self.bot.config.host, self.channel)
 
     def _is_channel_member(self, nick: str) -> bool:
         # irc3's userlist plugin tracks who's in each channel we've joined.

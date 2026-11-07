@@ -1,5 +1,5 @@
 """
-Unix socket server — accepts search terms, returns file paths.
+Unix socket server — the agent's input: accepts search terms, returns file paths.
 
 The socket lives in a directory only the current user can access
 ($XDG_RUNTIME_DIR, normally /run/user/<uid>), is created mode 0600, and
@@ -26,6 +26,10 @@ SOCKET_NAME = "ebooks.sock"
 
 class UnsafeSocketPathError(RuntimeError):
     """The socket's directory or path isn't private to us."""
+
+
+class SocketUnavailableError(RuntimeError):
+    """The socket server couldn't be started."""
 
 
 def _is_private_dir(path: Path) -> bool:
@@ -129,12 +133,15 @@ def _make_handler(agent):
             if not term:
                 return
 
+            log.info("Request: %s", term)
             try:
                 # Pass the search term to our agent
                 path = await agent.search(term)
                 reply = f"{path}\n"
+                log.info("Saved: %s", path)
             except (TimeoutError, DownloadError) as e:
                 reply = f"error: {e}\n"
+                log.warning("Failed: %s — %s", term, e)
             except Exception:
                 # A bug, not a normal failure — but the client still gets an
                 # answer instead of hanging, and the details go to the log
@@ -165,15 +172,15 @@ async def unix_socket(agent, path: Path | None = None):
         _remove_stale_socket(path)
         sock = _bind_private_socket(path)
     except (UnsafeSocketPathError, OSError) as e:
-        # This runs as a background task — log loudly rather than fail silently.
-        # The interactive CLI keeps working without the socket.
-        log.error("Unix socket disabled: %s", e)
-        return
+        # The socket is the agent's only input, so this is fatal
+        raise SocketUnavailableError(f"Can't open Unix socket: {e}") from e
 
     # Pass asyncio our handler, which tells the socket server what to do when bytes arrive
     # asyncio because who knows when those bytes are showing up
     server = await asyncio.start_unix_server(_make_handler(agent), sock=sock)
-    print(f"Listening on {path}")
+    log.info("Listening on %s", path)
+    log.info("Send a search with: echo 'Dune Frank Herbert' | socat - UNIX-CONNECT:%s", path)
+    log.info("Ready. Press Ctrl+C to stop.")
     try:
         async with server:
             await server.serve_forever()

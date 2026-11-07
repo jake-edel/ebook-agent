@@ -1,49 +1,46 @@
-"""CLI entry point — start the agent and accept search terms interactively."""
+"""Entry point — connect to IRC and serve searches from the Unix socket.
+
+Runs in the foreground: it stays attached to the terminal and logs what it's
+doing (connection, each request, downloads, results) until Ctrl+C or SIGTERM.
+Searches come in through the Unix socket; see unix_socket.py.
+"""
 
 import argparse
 import asyncio
 import logging
+import signal
 import sys
 from pathlib import Path
 
 from agent import EbooksAgent
 from config import Config, ConfigError, load_config
-from dcc import DownloadError
-from unix_socket import unix_socket
+from unix_socket import SocketUnavailableError, unix_socket
 
 log = logging.getLogger(__name__)
 
 
-async def _input_loop(agent: EbooksAgent):
-    # Continuously listen for inputs from an interactive shell
-    while True:
-        try:
-            # Create a new thread for the blocking input function
-            # Grab the search term from the shell
-            term = (await asyncio.to_thread(input, "search> ")).strip()
-        except EOFError:
-            break
-        if not term:
-            continue
-        if term.lower() in ("exit", "quit"):
-            break
-        try:
-            # Once we get a search term
-            # Pass it to the agent
-            # and await a response
-            path = await agent.search(term)
-            print(path)
-        except (TimeoutError, DownloadError) as e:
-            print(f"Error: {e}")
-        except Exception:
-            # Anything unexpected is a bug, but one failed search shouldn't
-            # end the whole session — log the traceback and keep going
-            log.exception("Search for %r failed unexpectedly", term)
+async def _serve(agent, stop: asyncio.Event, socket_path: Path | None = None):
+    """Serve socket requests until `stop` is set.
+
+    Raises SocketUnavailableError if the socket can't be opened — with no
+    prompt, the socket is the only way in, so running without it is pointless.
+    """
+    server = asyncio.create_task(unix_socket(agent, socket_path))
+    stopping = asyncio.create_task(stop.wait())
+    try:
+        done, _ = await asyncio.wait({server, stopping}, return_when=asyncio.FIRST_COMPLETED)
+        if server in done:
+            server.result()  # re-raises a startup failure
+            raise SocketUnavailableError("Unix socket server stopped unexpectedly")
+    finally:
+        for task in (server, stopping):
+            task.cancel()
+        await asyncio.gather(server, stopping, return_exceptions=True)
 
 
 def _parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Search #ebooks on IRCHighway and download the results.",
+        description="Connect to #ebooks on IRCHighway and download books requested over a Unix socket.",
         epilog="Settings are read from config.toml (see config.example.toml), "
                "then EBOOKS_* environment variables, then these flags.",
     )
@@ -65,24 +62,21 @@ def _load(args: argparse.Namespace) -> Config:
 async def _main(config: Config):
     # Instantiate our ebooks agent
     agent = EbooksAgent(config)
-    # Wait for the agent to start and connect to the server
-    # We don't want to handle any input until it's ready to receive
+    # Connect and join the channel before accepting any searches.
+    # Ctrl+C here still works: asyncio.run turns it into KeyboardInterrupt.
     await agent.start()
 
-    # Spawn a new task to handle the unix socket
-    # Pass it a reference to the agent so we can feed
-    # it input from the socket
-    socket_task = asyncio.create_task(unix_socket(agent))
+    # From here on, Ctrl+C (SIGINT) and SIGTERM (e.g. `kill`) both mean
+    # "shut down cleanly": stop serving, then disconnect from IRC
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop.set)
+
     try:
-        # Start our input loop
-        # The unix socket will run on a different task
-        # while this loop continually listens for input
-        # from the CLI
-        await _input_loop(agent)
+        await _serve(agent, stop)
     finally:
-        # When we exit out, we close our socket and end the task
-        # and disconnect agent from IRC server
-        socket_task.cancel()
+        log.info("Shutting down")
         agent.stop()
 
 # __name__ captures the module (entrypoint?) name
@@ -103,7 +97,7 @@ if __name__ == "__main__":
         asyncio.run(_main(config))
     except KeyboardInterrupt:
         pass
-    except TimeoutError as e:
+    except (TimeoutError, SocketUnavailableError) as e:
         # Startup failures — print the reason, not a traceback
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)

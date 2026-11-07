@@ -63,33 +63,39 @@ Mistakes are caught at startup with a clear message, and the agent exits without
 
 ## Usage
 
-### Interactive CLI
+Start the agent:
 
 ```bash
 python ebooks_agent.py
 ```
 
-Starts the agent, connects to IRC, and opens an interactive prompt:
+It connects to IRC and then runs in the foreground, logging what it does: connecting, each request, downloads, and where each file was saved. There's no prompt. Searches come in over a Unix socket instead:
 
 ```
-search> Dune Frank Herbert
-/home/jake/Projects/ebooks-agent/downloads/Dune Frank Herbert.epub
-search> exit
+INFO Connected to irc.irchighway.net and joined #ebooks
+INFO Listening on /run/user/1000/ebooks.sock
+INFO Send a search with: echo 'Dune Frank Herbert' | socat - UNIX-CONNECT:/run/user/1000/ebooks.sock
+INFO Ready. Press Ctrl+C to stop.
+INFO Request: Dune Frank Herbert
+...
+INFO Saved: /home/jake/Projects/ebooks-agent/downloads/Dune Frank Herbert.epub
 ```
 
-Type `exit` or `quit` to disconnect, or hit `Ctrl+C`.
+Press `Ctrl+C`, or send `SIGTERM`, to disconnect and exit.
 
-### Unix socket
+### Sending searches
 
-The agent also listens on a Unix socket for external input while the CLI is running. The path is printed at startup (`Listening on ...`) — normally `$XDG_RUNTIME_DIR/ebooks.sock`, i.e. `/run/user/<your uid>/ebooks.sock`:
+From another terminal, or from a script, write one search per connection to the socket:
 
 ```bash
 echo "Foundation Asimov" | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/ebooks.sock
 ```
 
-Only your user can use it: the socket is mode `0600` inside a directory only you can access, and connections from other users are rejected. If `XDG_RUNTIME_DIR` isn't set (e.g. some cron or SSH sessions), it falls back to a private `/tmp/ebooks-<uid>/` directory.
+The socket path is logged at startup. It's normally `$XDG_RUNTIME_DIR/ebooks.sock`, i.e. `/run/user/<your uid>/ebooks.sock`.
 
-Returns the file path on success, or an error message on timeout.
+Only your user can use it: the socket is mode `0600` inside a directory only you can access, and connections from other users are rejected. If `XDG_RUNTIME_DIR` isn't set (e.g. some cron or SSH sessions), it falls back to a private `/tmp/ebooks-<uid>/` directory. If the socket can't be created, the agent exits with an error, since there would be no way to send it searches.
+
+The reply is the saved file's path, or a line starting with `error:` explaining what went wrong.
 
 ## Testing
 
@@ -112,7 +118,7 @@ The tests never touch the network or your real `downloads/` folder — each test
 ## How it works
 
 1. Connects to `irc.irchighway.net:6697` over TLS and joins `#ebooks`
-2. Sends your search term as a message to the channel
+2. Waits for search terms on the Unix socket and sends each one as a message to the channel
 3. Waits for a `DCC SEND` offer from a channel bot (up to 60 seconds)
 4. Opens a direct TCP connection to the bot and streams the file into a temporary `.part` file in `downloads/`
 5. Once every byte has arrived, gives the file its real name. If that name is taken, it uses `Dune (1).epub` and so on rather than overwriting anything
@@ -122,12 +128,12 @@ The tests never touch the network or your real `downloads/` folder — each test
 ## Project structure
 
 ```
-ebooks_agent.py   — CLI entry point, flags and input loop
+ebooks_agent.py   — entry point: flags, startup, runs until Ctrl+C
 config.py         — loads and validates settings (defaults, config.toml, env, flags)
 config.example.toml — documented template for config.toml
 agent.py          — EbooksAgent class, owns the IRC connection lifecycle
 plugin.py         — irc3 plugin, handles IRC events and DCC offers
-unix_socket.py    — Unix socket server for external input
+unix_socket.py    — Unix socket server, the agent's input
 dcc.py            — DCC file transfer and zip extraction
 results.py        — parser for SearchBot result files
 downloads/        — where files are saved

@@ -186,9 +186,9 @@ def test_other_users_rejected(runtime_dir, monkeypatch):
     assert agent.terms == []
 
 
-def test_unsafe_location_disables_socket_without_crashing(runtime_dir, caplog):
+def test_unsafe_location_is_a_startup_error(runtime_dir):
     path = runtime_dir / "ebooks.sock"
     path.write_text("not a socket")
-    asyncio.run(us.unix_socket(FakeAgent(), path))  # returns instead of raising
-    assert "Unix socket disabled" in caplog.text
+    with pytest.raises(us.SocketUnavailableError, match="not a socket"):
+        asyncio.run(us.unix_socket(FakeAgent(), path))
     assert path.read_text() == "not a socket"

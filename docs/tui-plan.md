@@ -4,7 +4,7 @@ A multi-mode, keyboard-driven terminal app for searching `#ebooks`, browsing pas
 
 ## Background
 
-The project started as a CLI only. The Unix socket came next, so other processes could drive the agent. The TUI is one more frontend over the same agent: you search with `@search <query>`, look back through past searches, open one to see its results, and press Enter on a result to request it.
+The project started with an interactive prompt. The Unix socket came next, so other processes could drive the agent, and it later replaced the prompt entirely: the agent now runs headless in the foreground, logging as it goes. The TUI is one more frontend over the same agent: you search with `@search <query>`, look back through past searches, open one to see its results, and press Enter on a result to request it.
 
 ## The data
 
@@ -104,10 +104,10 @@ class AgentService(Protocol):
     def status(self) -> AgentStatus: ...                   # connected?, server, nick, TLS
 ```
 
-- **Phase 1:** `AgentService` is the agent object itself, running in the TUI's process. The Unix socket keeps running there too, as it does in the CLI today.
-- **Later (optional):** run the agent as a daemon and have the TUI connect to it over the Unix socket as a client. Then one IRC connection serves the TUI, scripts and the CLI. That needs a real protocol (JSON lines with request IDs and streamed events), so it's only worth building once it's actually needed. *(Open question 2.)*
+- **Phase 1:** `AgentService` is the agent object itself, running in the TUI's process. The Unix socket keeps running there too, as it does in the headless agent today.
+- **Later (optional):** run the agent as a daemon and have the TUI connect to it over the Unix socket as a client. Then one IRC connection serves the TUI and scripts. That needs a real protocol (JSON lines with request IDs and streamed events), so it's only worth building once it's actually needed. *(Open question 2.)*
 
-The existing CLI stays available, for example as `ebooks_agent.py --cli`, with the TUI as the default.
+Today's headless mode (logs to the terminal, input over the socket) stays available, for example as `ebooks_agent.py --headless`, with the TUI as the default.
 
 ## Backend prerequisites (phase 0)
 
@@ -122,7 +122,7 @@ These come before any UI work. Each one is useful on its own. They're tracked in
    - `request(line)` sends the `!Bot …` line and saves the book to `downloads/`.
 3. **Event stream**
    - An asyncio queue of typed events: `Connected`, `Disconnected`, `BotNotice`, `OfferAccepted`, `Progress`, `Completed`, `Failed`.
-   - The CLI can ignore them; the TUI renders them.
+   - The headless mode just logs them; the TUI renders them.
 4. **Progress reporting**
    - `receive_dcc` takes an optional callback that receives (bytes received, total).
 5. **Track requests per bot**

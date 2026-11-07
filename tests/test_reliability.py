@@ -1,14 +1,12 @@
 """Download reliability: failures are reported, nothing is overwritten, nothing hangs."""
 
 import asyncio
-import builtins
 import socket
 import zipfile
 
 import pytest
 
 import dcc
-import ebooks_agent
 import unix_socket as us
 from dcc import (
     BadArchiveError,
@@ -237,25 +235,3 @@ def test_socket_survives_oversized_line(runtime_dir):
     bad, good = asyncio.run(go())
     assert bad == b""
     assert good == b"/tmp/ok.epub\n"
-
-
-def test_cli_keeps_running_after_unexpected_error(monkeypatch, capsys, caplog):
-    lines = iter(["first", "second"])
-
-    def fake_input(prompt=""):
-        try:
-            return next(lines)
-        except StopIteration:
-            raise EOFError
-
-    monkeypatch.setattr(builtins, "input", fake_input)
-
-    class Agent:
-        async def search(self, term):
-            if term == "first":
-                raise ConnectionResetError("peer reset")
-            return f"/books/{term}.epub"
-
-    asyncio.run(ebooks_agent._input_loop(Agent()))
-    assert "/books/second.epub" in capsys.readouterr().out
-    assert "failed unexpectedly" in caplog.text
