@@ -148,7 +148,7 @@ Downloaded files are saved to the `downloads/` directory alongside the script (o
 
 ## Notes
 
-- The default nick is `pt_bookbot`. Change it with `--nick`, `EBOOKS_IRC_NICK`, or `nick` in `config.toml`.
+- The default nick is `ebooks_cli`. Change it with `--nick`, `EBOOKS_IRC_NICK`, or `nick` in `config.toml`.
 - Timeouts (all configurable):
   - 30 seconds to connect to IRC.
   - 60 seconds for a bot to offer the file.

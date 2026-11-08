@@ -38,7 +38,7 @@ class IrcConfig:
     host: str = "irc.irchighway.net"
     # TLS port. TLS is always on (see agent.py), so this must be a TLS port.
     port: int = 6697
-    nick: str = "pt_bookbot"
+    nick: str = "ebooks_cli"
     channel: str = "#ebooks"
     # Seconds to wait for the server connection and channel join at startup
     connect_timeout: float = 30.0

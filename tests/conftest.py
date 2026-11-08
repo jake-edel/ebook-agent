@@ -13,7 +13,7 @@ import plugin
 # A real public address (example.com). Offers must point at public IPs, but
 # tests never actually connect to it — downloads are faked or use 127.0.0.1.
 PUBLIC_IP = "93.184.216.34"
-OUR_NICK = "pt_bookbot"
+OUR_NICK = "ebooks_cli"
 
 
 def ip_int(ip: str) -> int:
