@@ -3,10 +3,12 @@
 import asyncio
 import logging
 import re
+import time
 from pathlib import Path
 
 import irc3
 
+import dcc
 from config import IrcConfig, SearchConfig
 from dcc import (
     DccOffer,
@@ -27,7 +29,7 @@ OFFER_TIMEOUT = SearchConfig().offer_timeout
 
 # A request like "!SomeBot Author - Title.epub" names the bot that should
 # serve the file. When present, only that bot's offer is accepted.
-_BOT_REQUEST_RE = re.compile(r"^!(?P<nick>\S+)")
+_BOT_REQUEST_RE = re.compile(r"^!(?P<nick>\S+)\s+\S")
 
 
 @irc3.plugin
@@ -111,22 +113,64 @@ class EbooksPlugin:
 
         self._pending.set_result(offer)
 
-    async def search(self, term: str) -> Path:
+    async def search(self, query: str) -> Path:
+        """Send `@search <query>` and save the results file to the searches dir.
+
+        The file is named "<timestamp> <query>.txt", without the "@search "
+        prefix, so past searches sort by date. Raises ValueError for an
+        empty query or one containing line breaks.
+        """
+        query = _check_line(query, "Search query").strip()
+        if not query:
+            raise ValueError("Search query is empty")
+        offer = await self._fetch(f"@search {query}", expected_sender=None)
+        # Results arrive zipped ("SearchBot_results_for_ dune.txt.zip") or,
+        # occasionally, as a bare .txt. Either way they end up as
+        # "<timestamp> <query>.txt" in the searches dir.
+        name = f"{time.strftime('%Y%m%d-%H%M%S')} {_filename_part(query)}"
+        if _is_zip(offer.filename):
+            path = await self._receive(offer, safe_download_path(offer.filename, dcc.SEARCHES_DIR))
+            path = extract_ebook(path, name)
+            log.info("Extracted: %s", path)
+        else:
+            suffix = Path(offer.filename).suffix.lower() or ".txt"
+            path = await self._receive(offer, safe_download_path(f"{name}{suffix}", dcc.SEARCHES_DIR))
+        return path
+
+    async def request(self, line: str) -> Path:
+        """Send a `!Bot <file>` line and save the book to the downloads dir.
+
+        Only an offer from that bot is accepted. The book keeps the name the
+        bot gave it (sanitized), or its name inside the zip if it came zipped.
+        Raises ValueError if `line` isn't of the form "!<bot> <something>".
+        """
+        line = _check_line(line, "Request").strip()
+        m = _BOT_REQUEST_RE.match(line)
+        if not m:
+            raise ValueError(f"Not a book request (expected '!<bot> <file>'): {line!r}")
+        offer = await self._fetch(line, expected_sender=m.group("nick"))
+        path = await self._receive(offer, safe_download_path(offer.filename, dcc.DOWNLOADS_DIR))
+        if _is_zip(path.name):
+            path = extract_ebook(path)
+            log.info("Extracted: %s", path)
+        return path
+
+    async def _fetch(self, line: str, expected_sender: str | None) -> DccOffer:
+        """Send `line` to the channel and wait for a vetted offer in reply."""
         async with self._search_lock:
-            m = _BOT_REQUEST_RE.match(term)
-            self._expected_sender = m.group("nick") if m else None
+            self._expected_sender = expected_sender
             self._pending = asyncio.get_running_loop().create_future()
             try:
                 # Send our message to the server
-                self.bot.privmsg(self.channel, term)
-                log.info("Message sent: %s", term)
+                self.bot.privmsg(self.channel, line)
+                log.info("Message sent: %s", line)
 
                 # Wait for a validated offer addressed to us
                 try:
-                    offer = await asyncio.wait_for(self._pending, self.offer_timeout)
+                    return await asyncio.wait_for(self._pending, self.offer_timeout)
                 except asyncio.TimeoutError:
                     raise TimeoutError(
-                        f"No DCC offer received within {self.offer_timeout:g}s for '{term}'"
+                        f"No DCC offer received within {self.offer_timeout:g}s for '{line}'"
                     ) from None
             finally:
                 # Close the slot immediately — any further offers (late,
@@ -134,19 +178,35 @@ class EbooksPlugin:
                 self._pending = None
                 self._expected_sender = None
 
-            # The filename is chosen by the remote bot — never trust it as a path.
-            # Raises UnsafeFilenameError if it can't be made safe.
-            dest = safe_download_path(offer.filename)
-            log.info(
-                "DCC SEND offer: %s from %s:%s (%s bytes)",
-                offer.filename, offer.ip, offer.port, offer.filesize,
-            )
-            # If we've made it this far, we have a vetted offer
-            # Lets receive it, and extract if its a zip
-            # May come back as e.g. "Dune (1).epub" if the name was taken
-            dest = await receive_dcc(offer.ip, offer.port, offer.filesize, dest)
-            log.info("Download complete: %s", dest)
-            if dest.suffix.lower() == ".zip":
-                dest = extract_ebook(dest, term)
-                log.info("Extracted: %s", dest)
-            return dest
+    async def _receive(self, offer: DccOffer, dest: Path) -> Path:
+        """Download a vetted offer to `dest` (built with safe_download_path).
+
+        May come back as e.g. "Dune (1).epub" if the name was taken.
+        """
+        log.info(
+            "DCC SEND offer: %s from %s:%s (%s bytes)",
+            offer.filename, offer.ip, offer.port, offer.filesize,
+        )
+        dest = await receive_dcc(offer.ip, offer.port, offer.filesize, dest)
+        log.info("Download complete: %s", dest)
+        return dest
+
+
+def _check_line(text: str, what: str) -> str:
+    """Refuse text that would smuggle extra IRC commands onto the wire."""
+    if any(c in text for c in "\r\n\x00"):
+        raise ValueError(f"{what} can't contain line breaks or NUL characters")
+    return text
+
+
+def _filename_part(query: str) -> str:
+    """Make a query safe to embed in a filename.
+
+    safe_download_path keeps only the last path component, so "AC/DC" would
+    become "DC". Replace separators first so the whole query survives.
+    """
+    return re.sub(r"[/\\]", "_", query)
+
+
+def _is_zip(filename: str) -> bool:
+    return filename.lower().endswith(".zip")

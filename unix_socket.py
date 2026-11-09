@@ -1,5 +1,9 @@
 """
-Unix socket server — the agent's input: accepts search terms, returns file paths.
+Unix socket server — the agent's input: accepts one line, returns a file path.
+
+- "!Bot <file>" requests that book and replies with where it was saved.
+- Anything else is a search: "@search dune" or just "dune". The reply is
+  the path of the saved results file.
 
 The socket lives in a directory only the current user can access
 ($XDG_RUNTIME_DIR, normally /run/user/<uid>), is created mode 0600, and
@@ -113,6 +117,19 @@ def _peer_uid(writer: asyncio.StreamWriter) -> int | None:
     return uid
 
 
+_SEARCH_PREFIX = "@search "
+
+
+async def _dispatch(agent, line: str):
+    """Route a socket line to the agent's request() or search()."""
+    if line.startswith("!"):
+        return await agent.request(line)
+    # Accept the IRC form too, so "@search dune" doesn't become "@search @search dune"
+    if line.lower().startswith(_SEARCH_PREFIX):
+        line = line[len(_SEARCH_PREFIX):]
+    return await agent.search(line)
+
+
 # Factory function that closes over agent, making it available to handle()
 # without changing its signature — asyncio expects (reader, writer) only
 def _make_handler(agent):
@@ -135,11 +152,10 @@ def _make_handler(agent):
 
             log.info("Request: %s", term)
             try:
-                # Pass the search term to our agent
-                path = await agent.search(term)
+                path = await _dispatch(agent, term)
                 reply = f"{path}\n"
                 log.info("Saved: %s", path)
-            except (TimeoutError, DownloadError) as e:
+            except (TimeoutError, DownloadError, ValueError) as e:
                 reply = f"error: {e}\n"
                 log.warning("Failed: %s — %s", term, e)
             except Exception:

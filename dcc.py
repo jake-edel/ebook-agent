@@ -19,7 +19,9 @@ from config import DownloadsConfig
 # replaces them at startup with the loaded config; tests monkeypatch them.
 _DEFAULTS = DownloadsConfig()
 
+# Books go to DOWNLOADS_DIR; search results files go to SEARCHES_DIR
 DOWNLOADS_DIR = _DEFAULTS.dir.resolve()
+SEARCHES_DIR = _DEFAULTS.searches_dir.resolve()
 
 # Characters that are unsafe or troublesome in filenames: path separators,
 # Windows-reserved punctuation, and ASCII control chars (incl. NUL)
@@ -44,11 +46,13 @@ STALL_TIMEOUT = _DEFAULTS.stall_timeout  # seconds
 
 
 def configure(cfg: DownloadsConfig):
-    """Apply download settings and create the downloads directory. Call once at startup."""
-    global DOWNLOADS_DIR, MAX_DOWNLOAD_BYTES, _DISK_HEADROOM_BYTES, CONNECT_TIMEOUT, STALL_TIMEOUT
-    # Resolve symlinks now: safe_download_path compares resolved paths against this
+    """Apply download settings and create the downloads and searches directories. Call once at startup."""
+    global DOWNLOADS_DIR, SEARCHES_DIR, MAX_DOWNLOAD_BYTES, _DISK_HEADROOM_BYTES, CONNECT_TIMEOUT, STALL_TIMEOUT
+    # Resolve symlinks now: safe_download_path compares resolved paths against these
     cfg.dir.mkdir(parents=True, exist_ok=True)
+    cfg.searches_dir.mkdir(parents=True, exist_ok=True)
     DOWNLOADS_DIR = cfg.dir.resolve()
+    SEARCHES_DIR = cfg.searches_dir.resolve()
     MAX_DOWNLOAD_BYTES = cfg.max_size_bytes
     _DISK_HEADROOM_BYTES = cfg.disk_headroom_bytes
     CONNECT_TIMEOUT = cfg.connect_timeout
@@ -60,7 +64,7 @@ class DownloadError(Exception):
 
 
 class UnsafeFilenameError(DownloadError, ValueError):
-    """Raised when a filename can't be turned into a path inside DOWNLOADS_DIR."""
+    """Raised when a filename can't be turned into a path inside DOWNLOADS_DIR or SEARCHES_DIR."""
 
 
 class FileTooLargeError(DownloadError, ValueError):
@@ -79,13 +83,22 @@ class BadArchiveError(DownloadError, ValueError):
     """Raised when a downloaded zip is corrupt, unsupported, or empty."""
 
 
-def safe_download_path(name: str) -> Path:
-    """Map an untrusted filename to a path guaranteed to live directly in DOWNLOADS_DIR.
+def _save_dirs() -> tuple[Path, Path]:
+    """The only directories anything is ever written into."""
+    return DOWNLOADS_DIR, SEARCHES_DIR
 
-    The name comes from a remote IRC bot, so treat it as hostile: drop any
-    directory components (either separator style), neutralize odd characters,
-    and refuse anything that still resolves outside the downloads directory.
+
+def safe_download_path(name: str, directory: Path | None = None) -> Path:
+    """Map an untrusted filename to a path guaranteed to live directly in `directory`.
+
+    `directory` defaults to DOWNLOADS_DIR and must be one of the save
+    directories. The name comes from a remote IRC bot, so treat it as hostile:
+    drop any directory components (either separator style), neutralize odd
+    characters, and refuse anything that still resolves outside `directory`.
     """
+    directory = DOWNLOADS_DIR if directory is None else directory.resolve()
+    if directory not in _save_dirs():
+        raise UnsafeFilenameError(f"Not a save directory: {directory}")
     # Keep only the final path component, whether the sender used / or \
     base = re.split(r"[/\\]", name)[-1]
     # Replace unsafe characters, trim whitespace, and strip leading dots so
@@ -103,10 +116,10 @@ def safe_download_path(name: str) -> Path:
         base = stem + suffix
 
     # Belt and braces: resolve the final path (following any symlinks already
-    # present) and confirm it sits directly inside DOWNLOADS_DIR
-    dest = (DOWNLOADS_DIR / base).resolve()
-    if dest.parent != DOWNLOADS_DIR:
-        raise UnsafeFilenameError(f"Refusing path outside downloads dir: {name!r}")
+    # present) and confirm it sits directly inside `directory`
+    dest = (directory / base).resolve()
+    if dest.parent != directory:
+        raise UnsafeFilenameError(f"Refusing path outside {directory}: {name!r}")
     return dest
 
 
@@ -238,17 +251,21 @@ _EBOOK_EXTS = {".txt", ".epub", ".mobi", ".pdf", ".doc", ".docx", ".rtf", ".azw"
 async def receive_dcc(ip: str, port: int, filesize: int, dest: Path) -> Path:
     """Download a DCC file into `dest`'s directory and return where it was saved.
 
+    `dest` must sit directly in DOWNLOADS_DIR or SEARCHES_DIR (use
+    safe_download_path to build it).
+
     The returned path is `dest`, or a numbered variant like "Dune (1).epub" if
     a file by that name already exists. Raises a DownloadError subclass on any
     failure, in which case nothing is left on disk.
     """
     # Re-check here so callers can't bypass sanitization by passing a raw path
-    if dest.resolve().parent != DOWNLOADS_DIR:
-        raise UnsafeFilenameError(f"Refusing to write outside downloads dir: {dest}")
+    directory = dest.resolve().parent
+    if directory not in _save_dirs():
+        raise UnsafeFilenameError(f"Refusing to write outside the save dirs: {dest}")
     # Callers should have gone through parse_dcc_offer, but enforce it here too
     if filesize > MAX_DOWNLOAD_BYTES:
         raise FileTooLargeError(f"{filesize:,} bytes exceeds the {MAX_DOWNLOAD_BYTES:,}-byte limit")
-    _check_disk_space(filesize)
+    _check_disk_space(filesize, directory)
 
     # Open a direct TCP connection to the sender (bypasses IRC server entirely).
     # Done before creating any file, so a dead sender leaves nothing behind.
@@ -313,10 +330,10 @@ async def receive_dcc(ip: str, port: int, filesize: int, dest: Path) -> Path:
             pass
 
 
-def _check_disk_space(needed: int):
+def _check_disk_space(needed: int, directory: Path):
     # Normally created by configure(); make sure it exists for direct callers too
-    DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
-    free = shutil.disk_usage(DOWNLOADS_DIR).free
+    directory.mkdir(parents=True, exist_ok=True)
+    free = shutil.disk_usage(directory).free
     if free - needed < _DISK_HEADROOM_BYTES:
         raise FileTooLargeError(
             f"Not enough disk space: need {needed:,} bytes, {free:,} free"
@@ -329,16 +346,18 @@ def _check_disk_space(needed: int):
 _ZIP_ERRORS = (zipfile.BadZipFile, zlib.error, EOFError, NotImplementedError, RuntimeError)
 
 
-def extract_ebook(zip_path: Path, term: str) -> Path:
+def extract_ebook(zip_path: Path, name: str | None = None) -> Path:
     """Extract the best ebook candidate from a zip, delete the zip, return the ebook's path.
 
-    Like receive_dcc, never overwrites an existing file. Raises BadArchiveError
-    if the zip can't be read.
+    The file is extracted next to the zip. It's named `name` plus the member's
+    extension, or, if `name` is None, after the member itself (its base name
+    only, sanitized). Like receive_dcc, never overwrites an existing file.
+    Raises BadArchiveError if the zip can't be read.
     """
     # Most ebooks come uncompressed directly over DCC. This handles the minority
     # of bots that bundle files in a zip — flexible, but rarely needed in practice.
     try:
-        out_path = _extract(zip_path, term)
+        out_path = _extract(zip_path, name)
     except _ZIP_ERRORS as e:
         raise BadArchiveError(f"Could not extract {zip_path.name}: {e}") from e
 
@@ -349,7 +368,7 @@ def extract_ebook(zip_path: Path, term: str) -> Path:
     return out_path
 
 
-def _extract(zip_path: Path, term: str) -> Path:
+def _extract(zip_path: Path, name: str | None) -> Path:
     with zipfile.ZipFile(zip_path) as file:
         # Get all members, skipping any directories
         members = [m for m in file.infolist() if not m.is_dir()]
@@ -373,11 +392,19 @@ def _extract(zip_path: Path, term: str) -> Path:
                 f"Refusing to extract {target.filename!r}: {target.file_size:,} bytes "
                 f"uncompressed exceeds the {MAX_DOWNLOAD_BYTES:,}-byte limit"
             )
-        _check_disk_space(target.file_size)
+        _check_disk_space(target.file_size, zip_path.parent)
 
-        # Name the output after the sanitized search term plus the extension —
-        # never the member's own path inside the zip
-        dest = safe_download_path(f"{term}{suffix}")
+        # Never use the member's path inside the zip — at most its base name,
+        # which safe_download_path keeps inside the zip's own directory
+        directory = zip_path.parent
+        if name is None:
+            try:
+                dest = safe_download_path(target.filename, directory)
+            except UnsafeFilenameError:
+                # e.g. a member called "..." — fall back to the zip's own name
+                dest = safe_download_path(f"{zip_path.stem}{suffix}", directory)
+        else:
+            dest = safe_download_path(f"{name}{suffix}", directory)
         part = None
         try:
             # Zip bomb guard, part 2: the header can lie, so stream in chunks

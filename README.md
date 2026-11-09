@@ -83,13 +83,19 @@ INFO Saved: /home/jake/Projects/ebooks-agent/downloads/Dune Frank Herbert.epub
 
 Press `Ctrl+C`, or send `SIGTERM`, to disconnect and exit.
 
-### Sending searches
+### Sending searches and requests
 
-From another terminal, or from a script, write one search per connection to the socket:
+From another terminal, or from a script, write one line per connection to the socket. A search returns the results file. A `!Bot` line, copied from a results file, requests that book:
 
 ```bash
 echo "Foundation Asimov" | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/ebooks.sock
+# -> searches/20261108-143005 Foundation Asimov.txt
+
+echo "!Bsk Isaac Asimov - Foundation.epub" | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/ebooks.sock
+# -> downloads/Isaac Asimov - Foundation.epub
 ```
+
+A line starting with `!` is sent as a book request, and only that bot's offer is accepted. Anything else is a search, sent as `@search <line>`. The `@search ` prefix is optional.
 
 The socket path is logged at startup. It's normally `$XDG_RUNTIME_DIR/ebooks.sock`, i.e. `/run/user/<your uid>/ebooks.sock`.
 
@@ -113,14 +119,14 @@ pytest -v         # list every test
 pytest tests/test_limits.py   # just one file
 ```
 
-The tests never touch the network or your real `downloads/` folder — each test gets its own temporary downloads directory, and DCC senders are faked locally.
+The tests never touch the network or your real `downloads/` and `searches/` folders. Each test gets its own temporary directories, and DCC senders are faked locally.
 
 ## How it works
 
 1. Connects to `irc.irchighway.net:6697` over TLS and joins `#ebooks`
-2. Waits for search terms on the Unix socket and sends each one as a message to the channel
-3. Waits for a `DCC SEND` offer from a channel bot (up to 60 seconds)
-4. Opens a direct TCP connection to the bot and streams the file into a temporary `.part` file in `downloads/`
+2. Waits for lines on the Unix socket and sends each one to the channel, as `@search <query>` or as the `!Bot …` request line
+3. Waits for a `DCC SEND` offer from a channel bot (up to 60 seconds). For a `!Bot` request, only that bot may answer
+4. Opens a direct TCP connection to the bot and streams the file into a temporary `.part` file, in `searches/` for results and `downloads/` for books
 5. Once every byte has arrived, gives the file its real name. If that name is taken, it uses `Dune (1).epub` and so on rather than overwriting anything
 6. If the file is a `.zip`, extracts the ebook the same way and removes the archive
 7. Returns the local file path
@@ -136,7 +142,8 @@ plugin.py         — irc3 plugin, handles IRC events and DCC offers
 unix_socket.py    — Unix socket server, the agent's input
 dcc.py            — DCC file transfer and zip extraction
 results.py        — parser for SearchBot result files
-downloads/        — where files are saved
+downloads/        — where books are saved
+searches/         — where search results files are saved
 tests/            — pytest suite (paths, offers, plugin gating, size limits, socket)
 TODO.md           — outstanding work and accepted risks
 docs/tui-plan.md  — design and phases for the planned TUI
@@ -144,7 +151,10 @@ docs/tui-plan.md  — design and phases for the planned TUI
 
 ## Output
 
-Downloaded files are saved to the `downloads/` directory alongside the script (or `downloads.dir` from the config), named after the search term.
+- **Search results** go to `searches/` (or `downloads.searches_dir`), named `<timestamp> <query>.txt`, for example `20261108-143005 dune.txt`. Older searches are kept, and a repeat gets a new file.
+- **Books** go to `downloads/` (or `downloads.dir`), keeping the name the bot sent (sanitized). For a zipped book, that's the name of the file inside the zip.
+
+Both folders sit alongside the script by default.
 
 ## Notes
 

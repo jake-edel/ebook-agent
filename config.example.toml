@@ -25,8 +25,10 @@ connect_timeout = 30
 offer_timeout = 60
 
 [downloads]
-# Where files are saved. Relative paths are relative to this file; ~ works.
+# Where books are saved. Relative paths are relative to this file; ~ works.
 dir = "downloads"
+# Where @search results files are saved (must differ from dir)
+searches_dir = "searches"
 # Largest file accepted, over DCC or extracted from a zip (max 4095)
 max_size_mib = 100
 # Refuse a download that would leave less free disk space than this

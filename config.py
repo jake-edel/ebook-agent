@@ -52,7 +52,10 @@ class SearchConfig:
 
 @dataclass(frozen=True)
 class DownloadsConfig:
+    # Where books are saved
     dir: Path = PROJECT_DIR / "downloads"
+    # Where @search results files are saved, kept apart from the books
+    searches_dir: Path = PROJECT_DIR / "searches"
     # Largest file accepted, over DCC or extracted from a zip
     max_size_mib: int = 100
     # Free disk space that must remain after a download
@@ -279,8 +282,11 @@ def _validate(cfg: Config):
         errors.append(f"downloads.max_size_mib: must be 1–{_MAX_SIZE_MIB_LIMIT}, got {dl.max_size_mib}")
     if dl.disk_headroom_mib < 0:
         errors.append(f"downloads.disk_headroom_mib: can't be negative, got {dl.disk_headroom_mib}")
-    if dl.dir.exists() and not dl.dir.is_dir():
-        errors.append(f"downloads.dir: {dl.dir} exists and is not a directory")
+    for name, path in [("downloads.dir", dl.dir), ("downloads.searches_dir", dl.searches_dir)]:
+        if path.exists() and not path.is_dir():
+            errors.append(f"{name}: {path} exists and is not a directory")
+    if dl.dir == dl.searches_dir:
+        errors.append(f"downloads.searches_dir: must differ from downloads.dir ({dl.dir})")
 
     if errors:
         raise ConfigError("Invalid configuration:\n  " + "\n  ".join(errors))

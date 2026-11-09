@@ -39,6 +39,15 @@ def downloads(tmp_path, monkeypatch):
     return d
 
 
+@pytest.fixture(autouse=True)
+def searches(tmp_path, monkeypatch):
+    """Same for SEARCHES_DIR, where results files go."""
+    d = (tmp_path / "searches").resolve()
+    d.mkdir()
+    monkeypatch.setattr(dcc, "SEARCHES_DIR", d)
+    return d
+
+
 @pytest.fixture
 def outside(tmp_path):
     """A directory next to downloads/ that nothing should ever be written into."""

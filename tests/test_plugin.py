@@ -12,13 +12,18 @@ from dcc import MAX_DOWNLOAD_BYTES, FileTooLargeError, InvalidOfferError
 from conftest import OUR_NICK, PUBLIC_IP, ip_int, mask, offer_text
 
 
-async def search_with(p, term, deliveries, wait=0.3):
-    """Start a search, deliver (sender, target, text) offers, return the result.
+def command(p, line):
+    """"!Bot ..." is a book request; anything else is a search query."""
+    return p.request(line) if line.startswith("!") else p.search(line)
 
-    Returns None if the search was still waiting after `wait` seconds
-    (i.e. every offer was ignored). Exceptions from the search propagate.
+
+async def search_with(p, term, deliveries, wait=0.3):
+    """Start a search or request, deliver (sender, target, text) offers, return the result.
+
+    Returns None if it was still waiting after `wait` seconds (i.e. every
+    offer was ignored). Exceptions from the command propagate.
     """
-    task = asyncio.create_task(p.search(term))
+    task = asyncio.create_task(command(p, term))
     await asyncio.sleep(0.01)
     for sender, target, text in deliveries:
         p.on_dcc_send(mask=mask(sender), target=target, text=text)
@@ -70,11 +75,11 @@ def test_late_offer_after_search_dropped(ebooks_plugin, received):
 
 # --- offers that must be accepted -----------------------------------------
 
-def test_member_offer_to_our_nick_accepted(ebooks_plugin, received):
+def test_member_offer_to_our_nick_accepted(ebooks_plugin, received, searches):
     res = run(search_with(ebooks_plugin, "dune", [("Oatmeal", OUR_NICK, offer_text())]))
-    assert res.name == "book.epub"
+    assert res.parent == searches
     assert received[0][:3] == (PUBLIC_IP, 5000, 10)
-    assert ebooks_plugin.bot.sent == [("#ebooks", "dune")]
+    assert ebooks_plugin.bot.sent == [("#ebooks", "@search dune")]
 
 
 def test_nick_matching_is_case_insensitive(ebooks_plugin, received):
@@ -92,17 +97,17 @@ def test_bang_request_only_accepts_named_bot(ebooks_plugin, received):
 
 def test_first_valid_offer_wins(ebooks_plugin, received):
     res = run(search_with(ebooks_plugin, "dune", [
-        ("Oatmeal", OUR_NICK, offer_text("first.epub")),
-        ("Search", OUR_NICK, offer_text("second.epub")),
+        ("Oatmeal", OUR_NICK, offer_text(port=5001)),
+        ("Search", OUR_NICK, offer_text(port=5002)),
     ]))
-    assert res.name == "first.epub"
-    assert len(received) == 1
+    assert res is not None
+    assert [port for _, port, _, _ in received] == [5001]
 
 
 def test_concurrent_searches_each_get_their_own_offer(ebooks_plugin, received):
     async def go():
         t1 = asyncio.create_task(ebooks_plugin.search("one"))
-        t2 = asyncio.create_task(ebooks_plugin.search("two"))
+        t2 = asyncio.create_task(ebooks_plugin.request("!Oatmeal two.epub"))
         await asyncio.sleep(0.01)
         ebooks_plugin.on_dcc_send(mask=mask("Oatmeal"), target=OUR_NICK, text=offer_text("one.epub"))
         await asyncio.sleep(0.01)
@@ -110,7 +115,8 @@ def test_concurrent_searches_each_get_their_own_offer(ebooks_plugin, received):
         return await asyncio.gather(t1, t2)
 
     r1, r2 = run(go())
-    assert (r1.name, r2.name) == ("one.epub", "two.epub")
+    assert r1.name.endswith(" one.epub")
+    assert r2.name == "two.epub"
 
 
 # --- bad offers from an eligible sender fail fast -------------------------
@@ -129,20 +135,20 @@ def test_bad_offer_from_eligible_sender_fails_search_immediately(ebooks_plugin, 
 # --- end to end through irc3's real line dispatch -------------------------
 
 @pytest.mark.parametrize("term, line, accepted", [
-    ("@search dune",
+    ("dune",
      f':Search!Search@irchighway.net PRIVMSG {OUR_NICK} :{offer_text("results.txt.zip")}', True),
     ("!Oatmeal Dune.epub",
      f':Oatmeal!o@host.net PRIVMSG {OUR_NICK} :{offer_text("Dune.epub")}', True),
-    ("@search dune",  # IRCv3 message tags before the prefix
+    ("dune",  # IRCv3 message tags before the prefix
      f'@time=2026-11-06T12:00:00Z :Search!s@h.net PRIVMSG {OUR_NICK} :{offer_text("x.zip", ctcp=False)}', True),
-    ("@search dune",
+    ("dune",
      f':Mallory!m@evil.net PRIVMSG {OUR_NICK} :{offer_text()}', False),
-    ("@search dune",  # sent to the channel
+    ("dune",  # sent to the channel
      f':Search!s@h.net PRIVMSG #ebooks :{offer_text()}', False),
 ])
 def test_raw_irc_lines(received, monkeypatch, term, line, accepted):
     # Fake zips aren't real archives; skip extraction
-    monkeypatch.setattr(plugin, "extract_ebook", lambda dest, term: dest)
+    monkeypatch.setattr(plugin, "extract_ebook", lambda path, name=None: path)
 
     async def go():
         bot = EbooksAgent(Config(irc=IrcConfig(nick=OUR_NICK)))._build_bot()
@@ -152,7 +158,7 @@ def test_raw_irc_lines(received, monkeypatch, term, line, accepted):
         bot.dispatch(f":irc.irchighway.net 353 {OUR_NICK} = #ebooks :{OUR_NICK} +Search @Oatmeal someone")
         await asyncio.sleep(0)
 
-        task = asyncio.create_task(p.search(term))
+        task = asyncio.create_task(command(p, term))
         await asyncio.sleep(0.01)
         bot.dispatch(line)
         try:

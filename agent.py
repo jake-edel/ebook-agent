@@ -97,12 +97,21 @@ class EbooksAgent:
         if self._bot:
             self._bot.quit("bye")
 
-    async def search(self, term: str) -> Path:
+    def _require_plugin(self) -> EbooksPlugin:
         if self._plugin is None:
             raise RuntimeError("Not connected — call start() first")
-        # No catch-all timeout here: each stage has its own limit instead.
-        # The plugin waits 60s for an offer (counted from when *this* search
-        # gets its turn, not while queued behind another), and the transfer
-        # has connect and stall timeouts — so a slow but healthy download
-        # isn't cut off partway through.
-        return await self._plugin.search(term)
+        return self._plugin
+
+    # No catch-all timeout on either command: each stage has its own limit.
+    # The plugin waits for an offer (counted from when *this* request gets
+    # its turn, not while queued behind another), and the transfer has
+    # connect and stall timeouts, so a slow but healthy download isn't cut
+    # off partway through.
+
+    async def search(self, query: str) -> Path:
+        """`@search <query>`; returns the results file, saved in the searches dir."""
+        return await self._require_plugin().search(query)
+
+    async def request(self, line: str) -> Path:
+        """Send a `!Bot <file>` line; returns the book, saved in the downloads dir."""
+        return await self._require_plugin().request(line)
