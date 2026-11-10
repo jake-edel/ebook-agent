@@ -26,6 +26,8 @@ class EbooksPlugin:
         # EbooksAgent calls configure() with the loaded config right after
         self.configure(Config())
         self._connected = asyncio.Event()
+        # Set when the server connection drops (e.g. after our QUIT)
+        self.disconnected = asyncio.Event()
         # Only one search runs at a time, and it owns the single pending slot
         # below. That way an offer can only ever satisfy the search that's
         # currently waiting — never a later one.
@@ -41,9 +43,14 @@ class EbooksPlugin:
         self.offer_timeout = config.search.offer_timeout
         self.downloads = Downloads(config.downloads)
 
+    def connection_lost(self):
+        # irc3 calls this on every plugin when the connection drops
+        self.disconnected.set()
+
     # **kwargs - pick up and discard any additional arguments
     # to prevent error from being thrown
     def on_connected(self, **kwargs):
+        self.disconnected.clear()
         # Once connected, join the #ebooks channel
         self.bot.join(self.channel)
         # Signal to the parent that we're done with the connected lifecycle

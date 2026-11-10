@@ -66,7 +66,10 @@ async def _main(config: Config):
         await _serve(agent, stop)
     finally:
         log.info("Shutting down")
-        agent.stop()
+        # A second Ctrl+C during the QUIT wait aborts it, as usual
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.remove_signal_handler(sig)
+        await agent.stop()
 
 # __name__ captures the module (entrypoint?) name
 # Detects whether this module was run as such

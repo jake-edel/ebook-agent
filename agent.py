@@ -12,6 +12,9 @@ from plugin import EbooksPlugin
 
 log = logging.getLogger(__name__)
 
+# How long stop() waits for the server to hang up after our QUIT
+QUIT_TIMEOUT = 2.0
+
 # TLS is always on and isn't configurable. IRCHighway round-robins across
 # several servers, each with its own self-signed certificate, and doesn't
 # publish the list — so certificates can't be verified or pinned. We still use
@@ -97,9 +100,24 @@ class EbooksAgent:
         fp = hashlib.sha256(der).hexdigest()[:16] if der else "unknown"
         log.info("TLS %s to %s (cert sha256 %s…, unverified)", tls.version() if tls else "?", peer[0], fp)
 
-    def stop(self):
-        if self._bot:
-            self._bot.quit("bye")
+    async def stop(self, timeout: float = QUIT_TIMEOUT):
+        """Send QUIT and wait (up to `timeout`) for the server to close the connection."""
+        protocol = getattr(self._bot, "protocol", None)
+        if protocol is None or protocol.closed:
+            return  # never connected, or already gone
+        # irc3 reconnects whenever a connection it didn't close drops. The
+        # server is about to drop this one on purpose, so mark it closed first.
+        protocol.closed = True
+        try:
+            async with asyncio.timeout(timeout):
+                # send_line's future resolves once the line is written out
+                await self._bot.send_line("QUIT :bye")
+                await self._plugin.disconnected.wait()
+            log.info("Disconnected from %s", self._config.irc.host)
+        except TimeoutError:
+            log.warning("Server didn't close the connection within %gs of QUIT", timeout)
+        finally:
+            protocol.transport.close()
 
     def _require_plugin(self) -> EbooksPlugin:
         if self._plugin is None:

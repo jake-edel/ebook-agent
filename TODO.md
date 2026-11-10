@@ -70,10 +70,6 @@ The groundwork for the planned TUI. [`docs/core-interface.md`](docs/core-interfa
     - `WAITING` and `QUEUED` requests fail with a clear error. The bot's queue entry is gone once our nick drops, so they aren't resent automatically.
     - Transfers in progress continue, because DCC is a separate connection.
 
-- [ ] **Clean shutdown**: `ebooks_agent.py` `_main()`, `agent.py` `stop()`
-  - **Problem:** `bot.quit()` isn't waited on and the event loop closes right after, so the `QUIT` message may never be sent.
-  - **Fix:** make `stop()` async: send QUIT, wait briefly (or until the server closes the connection), then close the transport. This is the `stop()` that `AgentService` already declares as async.
-
 ## Robustness / polish
 
 - [ ] **Pin dependencies**
@@ -124,6 +120,7 @@ These were decided on purpose. Revisit them if the threat model changes.
 - [x] **Size limits:** 100 MiB cap, free-disk check, never reads past the advertised size, zip bomb guards (header check plus counted streaming), and partial files are deleted when a download fails.
 - [x] **TLS:** IRC runs over port 6697, encrypt-only (see the accepted risks above).
 - [x] **Unix socket:** lives in `$XDG_RUNTIME_DIR` (or a private fallback folder), created as 0600, accepts the same user only, and is cleaned up on exit.
+- [x] **Clean shutdown:** `EbooksAgent.stop()` is async. It sends `QUIT`, waits up to 2s for the server to hang up, then closes the transport, and marks the connection closed first so irc3 doesn't reconnect. A second Ctrl+C during that wait aborts it. Tests in `tests/test_shutdown.py`.
 - [x] **Message logging:** every PRIVMSG and NOTICE addressed to us (DMs, bot replies, DCC offers, server notices) is logged at INFO with its exact text. Channel chatter isn't.
 - [x] **Test suite:** `tests/`, run with `pytest`.
 - [x] **README:** setup and venv instructions.
