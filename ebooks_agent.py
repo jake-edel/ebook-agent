@@ -41,22 +41,11 @@ async def _serve(agent, stop: asyncio.Event, socket_path: Path | None = None):
 def _parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Connect to #ebooks on IRCHighway and download books requested over a Unix socket.",
-        epilog="Settings are read from config.toml (see config.example.toml), "
-               "then EBOOKS_* environment variables, then these flags.",
+        epilog="Settings are read from config.toml (see config.example.toml).",
     )
     parser.add_argument("--config", type=Path, metavar="PATH",
-                        help="config file to use (default: config.toml next to this script, "
-                             "or $EBOOKS_CONFIG)")
-    parser.add_argument("--nick", help="IRC nick to connect as")
-    parser.add_argument("--downloads", metavar="DIR", help="directory to save files in")
+                        help="config file to use (default: config.toml next to this script)")
     return parser.parse_args(argv)
-
-
-def _load(args: argparse.Namespace) -> Config:
-    return load_config(
-        path=args.config,
-        overrides={("irc", "nick"): args.nick, ("downloads", "dir"): args.downloads},
-    )
 
 
 async def _main(config: Config):
@@ -89,7 +78,7 @@ if __name__ == "__main__":
     # Set up before loading the config, so config warnings are shown too
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     try:
-        config = _load(_parse_args())
+        config = load_config(_parse_args().config)
     except ConfigError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(2)

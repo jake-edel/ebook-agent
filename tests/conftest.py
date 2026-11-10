@@ -7,8 +7,9 @@ import zipfile
 import pytest
 from irc3.utils import IrcString
 
-import dcc
 import plugin
+from config import DownloadsConfig, IrcConfig
+from dcc import Downloads
 
 # A real public address (example.com). Offers must point at public IPs, but
 # tests never actually connect to it — downloads are faked or use 127.0.0.1.
@@ -30,22 +31,41 @@ def mask(nick: str) -> IrcString:
     return IrcString(f"{nick}!user@host.example")
 
 
-@pytest.fixture(autouse=True)
-def downloads(tmp_path, monkeypatch):
-    """Point DOWNLOADS_DIR at a fresh temp dir so tests never touch real downloads."""
+@pytest.fixture
+def downloads(tmp_path):
+    """A fresh downloads dir, so tests never touch real downloads."""
     d = (tmp_path / "downloads").resolve()
     d.mkdir()
-    monkeypatch.setattr(dcc, "DOWNLOADS_DIR", d)
     return d
 
 
-@pytest.fixture(autouse=True)
-def searches(tmp_path, monkeypatch):
-    """Same for SEARCHES_DIR, where results files go."""
+@pytest.fixture
+def searches(tmp_path):
+    """Same for the searches dir, where results files go."""
     d = (tmp_path / "searches").resolve()
     d.mkdir()
-    monkeypatch.setattr(dcc, "SEARCHES_DIR", d)
     return d
+
+
+@pytest.fixture
+def make_dl(downloads, searches):
+    """Build a Downloads saving into the temp dirs, with any settings overridden."""
+    def _make(**settings) -> Downloads:
+        return Downloads(DownloadsConfig(dir=downloads, searches_dir=searches, **settings))
+    return _make
+
+
+@pytest.fixture
+def dl(make_dl):
+    """The Downloads under test, with default limits."""
+    return make_dl()
+
+
+def make_plugin(dl: Downloads, bot=None) -> plugin.EbooksPlugin:
+    """An EbooksPlugin that saves through `dl` (so its receive can be stubbed)."""
+    p = plugin.EbooksPlugin(bot or FakeBot())
+    p.downloads = dl
+    return p
 
 
 @pytest.fixture
@@ -71,7 +91,7 @@ class FakeBot:
 
     def __init__(self, members=("Search", "Oatmeal")):
         self.nick = OUR_NICK
-        self.channels = {plugin.CHANNEL: set(members) | {OUR_NICK}}
+        self.channels = {IrcConfig().channel: set(members) | {OUR_NICK}}
         self.sent = []
 
     def privmsg(self, target, message):
@@ -79,7 +99,7 @@ class FakeBot:
 
 
 @pytest.fixture
-def received(monkeypatch):
+def received(dl, monkeypatch):
     """Replace the real DCC transfer with a stub that records calls and writes a byte."""
     calls = []
 
@@ -88,13 +108,13 @@ def received(monkeypatch):
         dest.write_bytes(b"x")
         return dest
 
-    monkeypatch.setattr(plugin, "receive_dcc", fake_receive)
+    monkeypatch.setattr(dl, "receive", fake_receive)
     return calls
 
 
 @pytest.fixture
-def ebooks_plugin(received):
-    return plugin.EbooksPlugin(FakeBot())
+def ebooks_plugin(dl, received):
+    return make_plugin(dl)
 
 
 async def local_sender(payload: bytes, hang: bool = False):

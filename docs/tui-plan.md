@@ -124,7 +124,7 @@ These come before any UI work. Each one is useful on its own. They're tracked in
    - An asyncio queue of typed events: `Connected`, `Disconnected`, `BotNotice`, `OfferAccepted`, `Progress`, `Completed`, `Failed`.
    - The headless mode just logs them; the TUI renders them.
 4. **Progress reporting**
-   - `receive_dcc` takes an optional callback that receives (bytes received, total).
+   - `Downloads.receive` takes an optional callback that receives (bytes received, total).
 5. **Track requests per bot**
    - Bots queue requests ("you are in queue position N"), and the file can arrive minutes later, so a fixed 60s timeout is the wrong model.
    - Track pending requests by expected bot, with no global lock:

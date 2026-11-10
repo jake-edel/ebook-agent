@@ -2,7 +2,15 @@
 
 import pytest
 
-from dcc import MAX_DOWNLOAD_BYTES, DownloadError, FileTooLargeError, InvalidOfferError, parse_dcc_offer
+from config import DownloadsConfig
+from dcc import DownloadError, FileTooLargeError, InvalidOfferError
+from dcc import parse_dcc_offer as _parse
+
+MAX_DOWNLOAD_BYTES = DownloadsConfig().max_size_bytes
+
+
+def parse_dcc_offer(text):
+    return _parse(text, MAX_DOWNLOAD_BYTES)
 
 from conftest import PUBLIC_IP, ip_int
 

@@ -12,7 +12,7 @@ import plugin
 import unix_socket as us
 from config import ConfigError, load_config
 
-from conftest import OUR_NICK, FakeBot, mask, offer_text
+from conftest import OUR_NICK, make_plugin, mask, offer_text
 
 # "<YYYYmmdd-HHMMSS> <query>.<ext>"
 _STAMP = r"\d{8}-\d{6}"
@@ -26,7 +26,7 @@ def zip_bytes(member: str, payload: bytes) -> bytes:
 
 
 @pytest.fixture
-def serve(monkeypatch):
+def serve(dl, monkeypatch):
     """Fake the DCC transfer: write `serve.payload` to wherever we're told."""
     calls = []
 
@@ -39,12 +39,12 @@ def serve(monkeypatch):
 
     fake_receive.payload = b"x"
     fake_receive.calls = calls
-    monkeypatch.setattr(plugin, "receive_dcc", fake_receive)
+    monkeypatch.setattr(dl, "receive", fake_receive)
     return fake_receive
 
 
-async def run_command(coro_fn, sender, filename, size=10):
-    p = plugin.EbooksPlugin(FakeBot())
+async def run_command(dl, coro_fn, sender, filename, size=10):
+    p = make_plugin(dl)
     task = asyncio.create_task(coro_fn(p))
     await asyncio.sleep(0.01)
     p.on_dcc_send(mask=mask(sender), target=OUR_NICK, text=offer_text(filename, size=size))
@@ -53,10 +53,10 @@ async def run_command(coro_fn, sender, filename, size=10):
 
 # --- search() ---------------------------------------------------------------
 
-def test_search_sends_at_search_and_saves_results_to_searches(serve, searches, downloads):
+def test_search_sends_at_search_and_saves_results_to_searches(dl, serve, searches, downloads):
     serve.payload = zip_bytes("SearchBot_results_for_ dune.txt", b"results")
     p, path = asyncio.run(run_command(
-        lambda p: p.search("dune"), "Search", "SearchBot_results_for_ dune.txt.zip"))
+        dl, lambda p: p.search("dune"), "Search", "SearchBot_results_for_ dune.txt.zip"))
 
     assert p.bot.sent == [("#ebooks", "@search dune")]
     assert path.parent == searches
@@ -66,24 +66,24 @@ def test_search_sends_at_search_and_saves_results_to_searches(serve, searches, d
     assert list(downloads.iterdir()) == []
 
 
-def test_search_unzipped_txt_is_renamed_too(serve, searches):
-    _, path = asyncio.run(run_command(lambda p: p.search("dune"), "Search", "whatever.txt"))
+def test_search_unzipped_txt_is_renamed_too(dl, serve, searches):
+    _, path = asyncio.run(run_command(dl, lambda p: p.search("dune"), "Search", "whatever.txt"))
     assert re.fullmatch(rf"{_STAMP} dune\.txt", path.name)
     assert path.parent == searches
 
 
-def test_search_query_with_slashes_kept_whole(serve, searches):
-    _, path = asyncio.run(run_command(lambda p: p.search("AC/DC bio"), "Search", "r.txt"))
+def test_search_query_with_slashes_kept_whole(dl, serve, searches):
+    _, path = asyncio.run(run_command(dl, lambda p: p.search("AC/DC bio"), "Search", "r.txt"))
     assert path.name.endswith(" AC_DC bio.txt")
     assert path.parent == searches
 
 
-def test_repeated_search_gets_its_own_file(serve, searches, monkeypatch):
+def test_repeated_search_gets_its_own_file(dl, serve, searches, monkeypatch):
     monkeypatch.setattr(plugin.time, "strftime", lambda fmt: "20261108-120000")
 
     async def go():
-        a = (await run_command(lambda p: p.search("dune"), "Search", "r.txt"))[1]
-        b = (await run_command(lambda p: p.search("dune"), "Search", "r.txt"))[1]
+        a = (await run_command(dl, lambda p: p.search("dune"), "Search", "r.txt"))[1]
+        b = (await run_command(dl, lambda p: p.search("dune"), "Search", "r.txt"))[1]
         return a, b
 
     a, b = asyncio.run(go())
@@ -92,19 +92,19 @@ def test_repeated_search_gets_its_own_file(serve, searches, monkeypatch):
 
 # --- request() --------------------------------------------------------------
 
-def test_request_sends_line_and_saves_book_to_downloads(serve, searches, downloads):
+def test_request_sends_line_and_saves_book_to_downloads(dl, serve, searches, downloads):
     p, path = asyncio.run(run_command(
-        lambda p: p.request("!Oatmeal Dune.epub"), "Oatmeal", "Frank Herbert - Dune.epub"))
+        dl, lambda p: p.request("!Oatmeal Dune.epub"), "Oatmeal", "Frank Herbert - Dune.epub"))
 
     assert p.bot.sent == [("#ebooks", "!Oatmeal Dune.epub")]
     assert path == downloads / "Frank Herbert - Dune.epub"
     assert list(searches.iterdir()) == []
 
 
-def test_zipped_book_keeps_its_name_inside_the_zip(serve, downloads):
+def test_zipped_book_keeps_its_name_inside_the_zip(dl, serve, downloads):
     serve.payload = zip_bytes("inner/Frank Herbert - Dune.epub", b"book")
     _, path = asyncio.run(run_command(
-        lambda p: p.request("!Oatmeal Dune.epub"), "Oatmeal", "Dune.zip"))
+        dl, lambda p: p.request("!Oatmeal Dune.epub"), "Oatmeal", "Dune.zip"))
     # Not named after the "!Oatmeal ..." line any more, and no directories from the zip
     assert path == downloads / "Frank Herbert - Dune.epub"
     assert path.read_bytes() == b"book"
@@ -121,18 +121,18 @@ def test_zipped_book_keeps_its_name_inside_the_zip(serve, downloads):
     lambda p: p.request("!Oatmeal"),        # no file
     lambda p: p.request("!Oatmeal Dune.epub\nQUIT"),
 ])
-def test_bad_input_rejected_before_sending(call, serve):
-    p = plugin.EbooksPlugin(FakeBot())
+def test_bad_input_rejected_before_sending(dl, call, serve):
+    p = make_plugin(dl)
     with pytest.raises(ValueError):
         asyncio.run(call(p))
     assert p.bot.sent == []
 
 
-def test_safe_download_path_only_into_save_dirs(tmp_path, searches, downloads):
-    assert dcc.safe_download_path("a.txt", searches).parent == searches
-    assert dcc.safe_download_path("a.txt").parent == downloads
+def test_safe_path_only_into_save_dirs(dl, tmp_path, searches, downloads):
+    assert dl.safe_path("a.txt", searches).parent == searches
+    assert dl.safe_path("a.txt").parent == downloads
     with pytest.raises(dcc.UnsafeFilenameError):
-        dcc.safe_download_path("a.txt", tmp_path)
+        dl.safe_path("a.txt", tmp_path)
 
 
 # --- the socket dispatches on the line ----------------------------------------
@@ -164,17 +164,18 @@ def test_socket_dispatch(line, expected):
 
 # --- config -------------------------------------------------------------------
 
-def test_searches_dir_configurable_and_created(tmp_path, monkeypatch):
-    for name in ("DOWNLOADS_DIR", "SEARCHES_DIR"):
-        monkeypatch.setattr(dcc, name, getattr(dcc, name))
-    cfg = load_config(env={"EBOOKS_DOWNLOADS_DIR": str(tmp_path / "b"),
-                           "EBOOKS_DOWNLOADS_SEARCHES_DIR": str(tmp_path / "s")})
-    dcc.configure(cfg.downloads)
-    assert dcc.SEARCHES_DIR == tmp_path / "s"
-    assert dcc.SEARCHES_DIR.is_dir()
+def test_searches_dir_configurable_and_created(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('[downloads]\ndir = "b"\nsearches_dir = "s"\n')
+    cfg = load_config(path)
+    dl = dcc.Downloads(cfg.downloads)
+    dl.create_dirs()
+    assert dl.searches_dir == tmp_path / "s"
+    assert dl.searches_dir.is_dir()
 
 
 def test_searches_dir_must_differ_from_downloads(tmp_path):
     with pytest.raises(ConfigError, match="must differ"):
-        load_config(env={"EBOOKS_DOWNLOADS_DIR": str(tmp_path / "x"),
-                         "EBOOKS_DOWNLOADS_SEARCHES_DIR": str(tmp_path / "x")})
+        path = tmp_path / "config.toml"
+        path.write_text('[downloads]\ndir = "x"\nsearches_dir = "x"\n')
+        load_config(path)

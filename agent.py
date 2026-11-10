@@ -7,7 +7,6 @@ from pathlib import Path
 
 import irc3
 
-import dcc
 from config import Config
 from plugin import EbooksPlugin
 
@@ -48,8 +47,7 @@ class EbooksAgent:
         # Get back our plugin instance,
         # now tied to irc3 lifecycle
         plugin = bot.get_plugin(EbooksPlugin)
-        plugin.channel = irc.channel
-        plugin.offer_timeout = self._config.search.offer_timeout
+        plugin.configure(self._config)
         # Add our event handlers
         # 1. Listening for a connection
         # 2. Logging every message addressed to us
@@ -74,11 +72,10 @@ class EbooksAgent:
         return bot
 
     async def start(self):
-        # Apply download settings and create the downloads folder
-        dcc.configure(self._config.downloads)
         # Create our bot and wait before we do anything else
         self._bot = self._build_bot()
         self._plugin = self._bot.get_plugin(EbooksPlugin)
+        self._plugin.downloads.create_dirs()
         self._bot.create_connection()
         irc = self._config.irc
         try:

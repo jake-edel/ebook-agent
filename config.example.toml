@@ -3,11 +3,8 @@
 # Copy this file to config.toml (which is gitignored) and change what you need.
 # Every setting is optional: anything you leave out uses the default shown here.
 #
-# Where settings come from, each overriding the one before:
-#   1. the defaults below
-#   2. this file: config.toml next to ebooks_agent.py, or --config PATH, or $EBOOKS_CONFIG
-#   3. environment variables named EBOOKS_<SECTION>_<KEY>, e.g. EBOOKS_IRC_NICK=my_nick
-#   4. command-line flags: --nick, --downloads
+# The agent reads config.toml next to ebooks_agent.py, or the file passed with
+# --config PATH.
 #
 # Unknown sections or settings are an error, so typos don't go unnoticed.
 

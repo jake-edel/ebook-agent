@@ -15,48 +15,12 @@ from pathlib import Path
 
 from config import DownloadsConfig
 
-# Module-level settings, initialized from the config defaults. configure()
-# replaces them at startup with the loaded config; tests monkeypatch them.
-_DEFAULTS = DownloadsConfig()
-
-# Books go to DOWNLOADS_DIR; search results files go to SEARCHES_DIR
-DOWNLOADS_DIR = _DEFAULTS.dir.resolve()
-SEARCHES_DIR = _DEFAULTS.searches_dir.resolve()
-
 # Characters that are unsafe or troublesome in filenames: path separators,
 # Windows-reserved punctuation, and ASCII control chars (incl. NUL)
 _UNSAFE_CHARS_RE = re.compile(r'[\x00-\x1f\x7f<>:"/\\|?*]')
 # Most filesystems cap a filename at 255 bytes; leave headroom
 _MAX_NAME_BYTES = 200
-
-# Largest file we'll accept, either over DCC or extracted from a zip.
-# Ebooks are rarely more than a few MB; big illustrated PDFs can reach tens.
-# Also keeps DCC's 32-bit byte-count acks far from overflowing (4 GiB).
-MAX_DOWNLOAD_BYTES = _DEFAULTS.max_size_bytes
-# Leave this much free disk space after a download
-_DISK_HEADROOM_BYTES = _DEFAULTS.disk_headroom_bytes
 _CHUNK_SIZE = 64 * 1024
-
-# How long to wait for the sender to accept our TCP connection
-CONNECT_TIMEOUT = _DEFAULTS.connect_timeout  # seconds
-# Give up if the sender goes this long without sending a single byte.
-# A limit on *idle* time rather than total time, so a slow but steady
-# transfer is never cut off partway through.
-STALL_TIMEOUT = _DEFAULTS.stall_timeout  # seconds
-
-
-def configure(cfg: DownloadsConfig):
-    """Apply download settings and create the downloads and searches directories. Call once at startup."""
-    global DOWNLOADS_DIR, SEARCHES_DIR, MAX_DOWNLOAD_BYTES, _DISK_HEADROOM_BYTES, CONNECT_TIMEOUT, STALL_TIMEOUT
-    # Resolve symlinks now: safe_download_path compares resolved paths against these
-    cfg.dir.mkdir(parents=True, exist_ok=True)
-    cfg.searches_dir.mkdir(parents=True, exist_ok=True)
-    DOWNLOADS_DIR = cfg.dir.resolve()
-    SEARCHES_DIR = cfg.searches_dir.resolve()
-    MAX_DOWNLOAD_BYTES = cfg.max_size_bytes
-    _DISK_HEADROOM_BYTES = cfg.disk_headroom_bytes
-    CONNECT_TIMEOUT = cfg.connect_timeout
-    STALL_TIMEOUT = cfg.stall_timeout
 
 
 class DownloadError(Exception):
@@ -64,11 +28,11 @@ class DownloadError(Exception):
 
 
 class UnsafeFilenameError(DownloadError, ValueError):
-    """Raised when a filename can't be turned into a path inside DOWNLOADS_DIR or SEARCHES_DIR."""
+    """Raised when a filename can't be turned into a path inside one of the save directories."""
 
 
 class FileTooLargeError(DownloadError, ValueError):
-    """Raised when a download or extracted file would exceed MAX_DOWNLOAD_BYTES or free disk."""
+    """Raised when a download or extracted file would exceed the size limit or free disk."""
 
 
 class TransferError(DownloadError):
@@ -81,46 +45,6 @@ class IncompleteDownloadError(TransferError):
 
 class BadArchiveError(DownloadError, ValueError):
     """Raised when a downloaded zip is corrupt, unsupported, or empty."""
-
-
-def _save_dirs() -> tuple[Path, Path]:
-    """The only directories anything is ever written into."""
-    return DOWNLOADS_DIR, SEARCHES_DIR
-
-
-def safe_download_path(name: str, directory: Path | None = None) -> Path:
-    """Map an untrusted filename to a path guaranteed to live directly in `directory`.
-
-    `directory` defaults to DOWNLOADS_DIR and must be one of the save
-    directories. The name comes from a remote IRC bot, so treat it as hostile:
-    drop any directory components (either separator style), neutralize odd
-    characters, and refuse anything that still resolves outside `directory`.
-    """
-    directory = DOWNLOADS_DIR if directory is None else directory.resolve()
-    if directory not in _save_dirs():
-        raise UnsafeFilenameError(f"Not a save directory: {directory}")
-    # Keep only the final path component, whether the sender used / or \
-    base = re.split(r"[/\\]", name)[-1]
-    # Replace unsafe characters, trim whitespace, and strip leading dots so
-    # we never produce ".", "..", or hidden dotfiles like ".bashrc"
-    base = _UNSAFE_CHARS_RE.sub("_", base).strip().lstrip(".").strip()
-    if not base:
-        raise UnsafeFilenameError(f"Refusing unusable filename: {name!r}")
-
-    # Truncate overly long names while preserving the extension
-    if len(base.encode()) > _MAX_NAME_BYTES:
-        stem, suffix = os.path.splitext(base)
-        suffix = suffix[:16]
-        budget = _MAX_NAME_BYTES - len(suffix.encode())
-        stem = stem.encode()[:budget].decode(errors="ignore")
-        base = stem + suffix
-
-    # Belt and braces: resolve the final path (following any symlinks already
-    # present) and confirm it sits directly inside `directory`
-    dest = (directory / base).resolve()
-    if dest.parent != directory:
-        raise UnsafeFilenameError(f"Refusing path outside {directory}: {name!r}")
-    return dest
 
 
 def _open_for_write(path: Path):
@@ -204,7 +128,7 @@ class DccOffer:
     filesize: int
 
 
-def parse_dcc_offer(text: str) -> DccOffer | None:
+def parse_dcc_offer(text: str, max_bytes: int) -> DccOffer | None:
     """Parse and validate a DCC SEND offer.
 
     Returns None if the text isn't a DCC SEND at all, raises InvalidOfferError
@@ -237,107 +161,15 @@ def parse_dcc_offer(text: str) -> DccOffer | None:
     if filesize <= 0:
         raise InvalidOfferError(f"Refusing DCC offer with size {filesize}")
     # Checked here, before we ever connect, so an oversized offer costs nothing
-    if filesize > MAX_DOWNLOAD_BYTES:
+    if filesize > max_bytes:
         raise FileTooLargeError(
             f"Refusing {filename!r}: {filesize:,} bytes exceeds the "
-            f"{MAX_DOWNLOAD_BYTES:,}-byte limit"
+            f"{max_bytes:,}-byte limit"
         )
 
     return DccOffer(filename=filename, ip=str(addr), port=port, filesize=filesize)
 
 _EBOOK_EXTS = {".txt", ".epub", ".mobi", ".pdf", ".doc", ".docx", ".rtf", ".azw", ".azw3"}
-
-
-async def receive_dcc(ip: str, port: int, filesize: int, dest: Path) -> Path:
-    """Download a DCC file into `dest`'s directory and return where it was saved.
-
-    `dest` must sit directly in DOWNLOADS_DIR or SEARCHES_DIR (use
-    safe_download_path to build it).
-
-    The returned path is `dest`, or a numbered variant like "Dune (1).epub" if
-    a file by that name already exists. Raises a DownloadError subclass on any
-    failure, in which case nothing is left on disk.
-    """
-    # Re-check here so callers can't bypass sanitization by passing a raw path
-    directory = dest.resolve().parent
-    if directory not in _save_dirs():
-        raise UnsafeFilenameError(f"Refusing to write outside the save dirs: {dest}")
-    # Callers should have gone through parse_dcc_offer, but enforce it here too
-    if filesize > MAX_DOWNLOAD_BYTES:
-        raise FileTooLargeError(f"{filesize:,} bytes exceeds the {MAX_DOWNLOAD_BYTES:,}-byte limit")
-    _check_disk_space(filesize, directory)
-
-    # Open a direct TCP connection to the sender (bypasses IRC server entirely).
-    # Done before creating any file, so a dead sender leaves nothing behind.
-    try:
-        async with asyncio.timeout(CONNECT_TIMEOUT):
-            reader, writer = await asyncio.open_connection(ip, port)
-    except TimeoutError:
-        raise TransferError(
-            f"Could not connect to {ip}:{port} within {CONNECT_TIMEOUT}s"
-        ) from None
-    except OSError as e:
-        raise TransferError(f"Could not connect to {ip}:{port}: {e}") from e
-
-    part = None
-    try:
-        # Download into a temporary .part file (never via a symlink); it only
-        # gets the real name once every byte has arrived
-        part, file = _open_part(dest)
-        received = 0
-        with file:
-            while received < filesize:
-                # The stall timeout restarts for every chunk: it limits idle
-                # time, not the length of the whole transfer
-                async with asyncio.timeout(STALL_TIMEOUT):
-                    # Read a chunk of bytes from the connection — never more than the
-                    # bytes still owed, so a sender that keeps streaming past the size
-                    # it advertised can't make us write a byte more than agreed
-                    chunk = await reader.read(min(_CHUNK_SIZE, filesize - received))
-                    if not chunk:
-                        break
-                    # Write chunk to file, and also ack back to the sender
-                    # how many total bytes we've received so far
-                    file.write(chunk)
-                    received += len(chunk)
-                    writer.write(struct.pack("!I", received))
-                    # Flush the write buffer — actually send the ack over the wire
-                    await writer.drain()
-
-        if received != filesize:
-            raise IncompleteDownloadError(
-                f"Sender closed the connection after {received:,} of {filesize:,} bytes"
-            )
-        final = _finalize(part, dest)
-        part = None  # it's been moved into place; nothing to clean up
-        return final
-    except TimeoutError:
-        # TimeoutError is a subclass of OSError, so this must come first
-        raise TransferError(
-            f"Transfer stalled: no data from {ip}:{port} for {STALL_TIMEOUT}s"
-        ) from None
-    except OSError as e:
-        raise TransferError(f"Transfer from {ip}:{port} failed: {e}") from e
-    finally:
-        # Failed or cancelled — remove only our own .part file. Any existing
-        # file at `dest` was never touched.
-        if part is not None:
-            part.unlink(missing_ok=True)
-        writer.close()
-        try:
-            await writer.wait_closed()
-        except (ConnectionError, OSError):
-            pass
-
-
-def _check_disk_space(needed: int, directory: Path):
-    # Normally created by configure(); make sure it exists for direct callers too
-    directory.mkdir(parents=True, exist_ok=True)
-    free = shutil.disk_usage(directory).free
-    if free - needed < _DISK_HEADROOM_BYTES:
-        raise FileTooLargeError(
-            f"Not enough disk space: need {needed:,} bytes, {free:,} free"
-        )
 
 
 # What zipfile raises for archives it can't read: corrupt or truncated data
@@ -346,83 +178,233 @@ def _check_disk_space(needed: int, directory: Path):
 _ZIP_ERRORS = (zipfile.BadZipFile, zlib.error, EOFError, NotImplementedError, RuntimeError)
 
 
-def extract_ebook(zip_path: Path, name: str | None = None) -> Path:
-    """Extract the best ebook candidate from a zip, delete the zip, return the ebook's path.
+class Downloads:
+    """Saves files from DCC offers, within the limits of one DownloadsConfig.
 
-    The file is extracted next to the zip. It's named `name` plus the member's
-    extension, or, if `name` is None, after the member itself (its base name
-    only, sanitized). Like receive_dcc, never overwrites an existing file.
-    Raises BadArchiveError if the zip can't be read.
+    Books go to `dir`; search results files go to `searches_dir`. Those are
+    the only two directories anything is ever written into.
     """
-    # Most ebooks come uncompressed directly over DCC. This handles the minority
-    # of bots that bundle files in a zip — flexible, but rarely needed in practice.
-    try:
-        out_path = _extract(zip_path, name)
-    except _ZIP_ERRORS as e:
-        raise BadArchiveError(f"Could not extract {zip_path.name}: {e}") from e
 
-    # Let go of the zip now that we've extracted what we need
-    zip_path.unlink()
+    def __init__(self, config: DownloadsConfig):
+        self.config = config
+        # Resolved up front: safe_path compares resolved paths against these
+        self.dir = config.dir.resolve()
+        self.searches_dir = config.searches_dir.resolve()
+        self.save_dirs = (self.dir, self.searches_dir)
+        # Largest file we'll accept, either over DCC or extracted from a zip.
+        # Ebooks are rarely more than a few MB; big illustrated PDFs can reach
+        # tens. Also keeps DCC's 32-bit byte-count acks far from overflowing.
+        self.max_bytes = config.max_size_bytes
 
-    # Let the calling function know where the file is
-    return out_path
+    def create_dirs(self):
+        """Create the save directories. Call once at startup."""
+        for d in self.save_dirs:
+            d.mkdir(parents=True, exist_ok=True)
 
+    def parse_offer(self, text: str) -> DccOffer | None:
+        """parse_dcc_offer, with this config's size limit."""
+        return parse_dcc_offer(text, self.max_bytes)
 
-def _extract(zip_path: Path, name: str | None) -> Path:
-    with zipfile.ZipFile(zip_path) as file:
-        # Get all members, skipping any directories
-        members = [m for m in file.infolist() if not m.is_dir()]
+    def safe_path(self, name: str, directory: Path | None = None) -> Path:
+        """Map an untrusted filename to a path guaranteed to live directly in `directory`.
 
-        # Sort so known ebook extensions float to the top.
-        # The condition is inverted (not in) because False sorts before True —
-        # files that ARE ebook extensions get False and sort first
-        members.sort(key=lambda m: (Path(m.filename).suffix.lower() not in _EBOOK_EXTS, m.filename))
+        `directory` defaults to the downloads dir and must be one of the save
+        directories. The name comes from a remote IRC bot, so treat it as hostile:
+        drop any directory components (either separator style), neutralize odd
+        characters, and refuse anything that still resolves outside `directory`.
+        """
+        directory = self.dir if directory is None else directory.resolve()
+        if directory not in self.save_dirs:
+            raise UnsafeFilenameError(f"Not a save directory: {directory}")
+        # Keep only the final path component, whether the sender used / or \
+        base = re.split(r"[/\\]", name)[-1]
+        # Replace unsafe characters, trim whitespace, and strip leading dots so
+        # we never produce ".", "..", or hidden dotfiles like ".bashrc"
+        base = _UNSAFE_CHARS_RE.sub("_", base).strip().lstrip(".").strip()
+        if not base:
+            raise UnsafeFilenameError(f"Refusing unusable filename: {name!r}")
 
-        if not members:
-            raise BadArchiveError(f"Zip {zip_path.name} contains no files")
+        # Truncate overly long names while preserving the extension
+        if len(base.encode()) > _MAX_NAME_BYTES:
+            stem, suffix = os.path.splitext(base)
+            suffix = suffix[:16]
+            budget = _MAX_NAME_BYTES - len(suffix.encode())
+            stem = stem.encode()[:budget].decode(errors="ignore")
+            base = stem + suffix
 
-        # Target only the first file found — the best ebook candidate after sorting
-        target = members[0]
-        suffix = Path(target.filename).suffix.lower() or ".txt"
+        # Belt and braces: resolve the final path (following any symlinks already
+        # present) and confirm it sits directly inside `directory`
+        dest = (directory / base).resolve()
+        if dest.parent != directory:
+            raise UnsafeFilenameError(f"Refusing path outside {directory}: {name!r}")
+        return dest
 
-        # Zip bomb guard, part 1: the zip's own header says how big the file
-        # will be once decompressed. Refuse before decompressing anything.
-        if target.file_size > MAX_DOWNLOAD_BYTES:
-            raise FileTooLargeError(
-                f"Refusing to extract {target.filename!r}: {target.file_size:,} bytes "
-                f"uncompressed exceeds the {MAX_DOWNLOAD_BYTES:,}-byte limit"
-            )
-        _check_disk_space(target.file_size, zip_path.parent)
+    async def receive(self, ip: str, port: int, filesize: int, dest: Path) -> Path:
+        """Download a DCC file into `dest`'s directory and return where it was saved.
 
-        # Never use the member's path inside the zip — at most its base name,
-        # which safe_download_path keeps inside the zip's own directory
-        directory = zip_path.parent
-        if name is None:
-            try:
-                dest = safe_download_path(target.filename, directory)
-            except UnsafeFilenameError:
-                # e.g. a member called "..." — fall back to the zip's own name
-                dest = safe_download_path(f"{zip_path.stem}{suffix}", directory)
-        else:
-            dest = safe_download_path(f"{name}{suffix}", directory)
+        `dest` must sit directly in one of the save dirs (use safe_path to
+        build it).
+
+        The returned path is `dest`, or a numbered variant like "Dune (1).epub" if
+        a file by that name already exists. Raises a DownloadError subclass on any
+        failure, in which case nothing is left on disk.
+        """
+        # Re-check here so callers can't bypass sanitization by passing a raw path
+        directory = dest.resolve().parent
+        if directory not in self.save_dirs:
+            raise UnsafeFilenameError(f"Refusing to write outside the save dirs: {dest}")
+        # Callers should have gone through parse_dcc_offer, but enforce it here too
+        if filesize > self.max_bytes:
+            raise FileTooLargeError(f"{filesize:,} bytes exceeds the {self.max_bytes:,}-byte limit")
+        self._check_disk_space(filesize, directory)
+
+        # Open a direct TCP connection to the sender (bypasses IRC server entirely).
+        # Done before creating any file, so a dead sender leaves nothing behind.
+        try:
+            async with asyncio.timeout(self.config.connect_timeout):
+                reader, writer = await asyncio.open_connection(ip, port)
+        except TimeoutError:
+            raise TransferError(
+                f"Could not connect to {ip}:{port} within {self.config.connect_timeout}s"
+            ) from None
+        except OSError as e:
+            raise TransferError(f"Could not connect to {ip}:{port}: {e}") from e
+
         part = None
         try:
-            # Zip bomb guard, part 2: the header can lie, so stream in chunks
-            # and count what actually comes out rather than read() it all into memory
-            written = 0
-            part, out = _open_part(dest)
-            with file.open(target) as src, out:
-                while chunk := src.read(_CHUNK_SIZE):
-                    written += len(chunk)
-                    if written > MAX_DOWNLOAD_BYTES:
-                        raise FileTooLargeError(
-                            f"Refusing to extract {target.filename!r}: decompressed past "
-                            f"the {MAX_DOWNLOAD_BYTES:,}-byte limit"
-                        )
-                    out.write(chunk)
+            # Download into a temporary .part file (never via a symlink); it only
+            # gets the real name once every byte has arrived
+            part, file = _open_part(dest)
+            received = 0
+            with file:
+                while received < filesize:
+                    # The stall timeout restarts for every chunk: it limits idle
+                    # time, not the length of the whole transfer
+                    async with asyncio.timeout(self.config.stall_timeout):
+                        # Read a chunk of bytes from the connection — never more than the
+                        # bytes still owed, so a sender that keeps streaming past the size
+                        # it advertised can't make us write a byte more than agreed
+                        chunk = await reader.read(min(_CHUNK_SIZE, filesize - received))
+                        if not chunk:
+                            break
+                        # Write chunk to file, and also ack back to the sender
+                        # how many total bytes we've received so far
+                        file.write(chunk)
+                        received += len(chunk)
+                        writer.write(struct.pack("!I", received))
+                        # Flush the write buffer — actually send the ack over the wire
+                        await writer.drain()
+
+            if received != filesize:
+                raise IncompleteDownloadError(
+                    f"Sender closed the connection after {received:,} of {filesize:,} bytes"
+                )
             final = _finalize(part, dest)
-            part = None
+            part = None  # it's been moved into place; nothing to clean up
             return final
+        except TimeoutError:
+            # TimeoutError is a subclass of OSError, so this must come first
+            raise TransferError(
+                f"Transfer stalled: no data from {ip}:{port} for {self.config.stall_timeout}s"
+            ) from None
+        except OSError as e:
+            raise TransferError(f"Transfer from {ip}:{port} failed: {e}") from e
         finally:
+            # Failed or cancelled — remove only our own .part file. Any existing
+            # file at `dest` was never touched.
             if part is not None:
                 part.unlink(missing_ok=True)
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except (ConnectionError, OSError):
+                pass
+
+    def _check_disk_space(self, needed: int, directory: Path):
+        # Normally created by create_dirs(); make sure it exists for direct callers too
+        directory.mkdir(parents=True, exist_ok=True)
+        free = shutil.disk_usage(directory).free
+        if free - needed < self.config.disk_headroom_bytes:
+            raise FileTooLargeError(
+                f"Not enough disk space: need {needed:,} bytes, {free:,} free"
+            )
+
+    def extract(self, zip_path: Path, name: str | None = None) -> Path:
+        """Extract the best ebook candidate from a zip, delete the zip, return the ebook's path.
+
+        The file is extracted next to the zip. It's named `name` plus the member's
+        extension, or, if `name` is None, after the member itself (its base name
+        only, sanitized). Like receive(), never overwrites an existing file.
+        Raises BadArchiveError if the zip can't be read.
+        """
+        # Most ebooks come uncompressed directly over DCC. This handles the minority
+        # of bots that bundle files in a zip — flexible, but rarely needed in practice.
+        try:
+            out_path = self._extract(zip_path, name)
+        except _ZIP_ERRORS as e:
+            raise BadArchiveError(f"Could not extract {zip_path.name}: {e}") from e
+
+        # Let go of the zip now that we've extracted what we need
+        zip_path.unlink()
+
+        # Let the calling function know where the file is
+        return out_path
+
+    def _extract(self, zip_path: Path, name: str | None) -> Path:
+        with zipfile.ZipFile(zip_path) as file:
+            # Get all members, skipping any directories
+            members = [m for m in file.infolist() if not m.is_dir()]
+
+            # Sort so known ebook extensions float to the top.
+            # The condition is inverted (not in) because False sorts before True —
+            # files that ARE ebook extensions get False and sort first
+            members.sort(key=lambda m: (Path(m.filename).suffix.lower() not in _EBOOK_EXTS, m.filename))
+
+            if not members:
+                raise BadArchiveError(f"Zip {zip_path.name} contains no files")
+
+            # Target only the first file found — the best ebook candidate after sorting
+            target = members[0]
+            suffix = Path(target.filename).suffix.lower() or ".txt"
+
+            # Zip bomb guard, part 1: the zip's own header says how big the file
+            # will be once decompressed. Refuse before decompressing anything.
+            if target.file_size > self.max_bytes:
+                raise FileTooLargeError(
+                    f"Refusing to extract {target.filename!r}: {target.file_size:,} bytes "
+                    f"uncompressed exceeds the {self.max_bytes:,}-byte limit"
+                )
+            self._check_disk_space(target.file_size, zip_path.parent)
+
+            # Never use the member's path inside the zip — at most its base name,
+            # which safe_path keeps inside the zip's own directory
+            directory = zip_path.parent
+            if name is None:
+                try:
+                    dest = self.safe_path(target.filename, directory)
+                except UnsafeFilenameError:
+                    # e.g. a member called "..." — fall back to the zip's own name
+                    dest = self.safe_path(f"{zip_path.stem}{suffix}", directory)
+            else:
+                dest = self.safe_path(f"{name}{suffix}", directory)
+            part = None
+            try:
+                # Zip bomb guard, part 2: the header can lie, so stream in chunks
+                # and count what actually comes out rather than read() it all into memory
+                written = 0
+                part, out = _open_part(dest)
+                with file.open(target) as src, out:
+                    while chunk := src.read(_CHUNK_SIZE):
+                        written += len(chunk)
+                        if written > self.max_bytes:
+                            raise FileTooLargeError(
+                                f"Refusing to extract {target.filename!r}: decompressed past "
+                                f"the {self.max_bytes:,}-byte limit"
+                            )
+                        out.write(chunk)
+                final = _finalize(part, dest)
+                part = None
+                return final
+            finally:
+                if part is not None:
+                    part.unlink(missing_ok=True)

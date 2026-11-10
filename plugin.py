@@ -8,24 +8,10 @@ from pathlib import Path
 
 import irc3
 
-import dcc
-from config import IrcConfig, SearchConfig
-from dcc import (
-    DccOffer,
-    DownloadError,
-    FileTooLargeError,
-    InvalidOfferError,
-    extract_ebook,
-    parse_dcc_offer,
-    receive_dcc,
-    safe_download_path,
-)
+from config import Config
+from dcc import DccOffer, DownloadError, Downloads, FileTooLargeError, InvalidOfferError
 
 log = logging.getLogger(__name__)
-
-# Defaults; EbooksAgent overrides them per instance from the loaded config
-CHANNEL = IrcConfig().channel
-OFFER_TIMEOUT = SearchConfig().offer_timeout
 
 # A request like "!SomeBot Author - Title.epub" names the bot that should
 # serve the file. When present, only that bot's offer is accepted.
@@ -36,8 +22,9 @@ _BOT_REQUEST_RE = re.compile(r"^!(?P<nick>\S+)\s+\S")
 class EbooksPlugin:
     def __init__(self, bot):
         self.bot = bot
-        self.channel = CHANNEL
-        self.offer_timeout = OFFER_TIMEOUT
+        # irc3 creates the plugin, so settings can't go through __init__;
+        # EbooksAgent calls configure() with the loaded config right after
+        self.configure(Config())
         self._connected = asyncio.Event()
         # Only one search runs at a time, and it owns the single pending slot
         # below. That way an offer can only ever satisfy the search that's
@@ -48,6 +35,11 @@ class EbooksPlugin:
         self._pending: asyncio.Future[DccOffer] | None = None
         # Nick the current search expects the offer from, if the term named one
         self._expected_sender: str | None = None
+
+    def configure(self, config: Config):
+        self.channel = config.irc.channel
+        self.offer_timeout = config.search.offer_timeout
+        self.downloads = Downloads(config.downloads)
 
     # **kwargs - pick up and discard any additional arguments
     # to prevent error from being thrown
@@ -83,7 +75,7 @@ class EbooksPlugin:
         # whether this offer came from someone we're actually waiting on
         error: DownloadError | None = None
         try:
-            offer = parse_dcc_offer(text)
+            offer = self.downloads.parse_offer(text)
         except (InvalidOfferError, FileTooLargeError) as e:
             offer, error = None, e
         if offer is None and error is None:
@@ -135,13 +127,14 @@ class EbooksPlugin:
         # occasionally, as a bare .txt. Either way they end up as
         # "<timestamp> <query>.txt" in the searches dir.
         name = f"{time.strftime('%Y%m%d-%H%M%S')} {_filename_part(query)}"
+        dl = self.downloads
         if _is_zip(offer.filename):
-            path = await self._receive(offer, safe_download_path(offer.filename, dcc.SEARCHES_DIR))
-            path = extract_ebook(path, name)
+            path = await self._receive(offer, dl.safe_path(offer.filename, dl.searches_dir))
+            path = dl.extract(path, name)
             log.info("Extracted: %s", path)
         else:
             suffix = Path(offer.filename).suffix.lower() or ".txt"
-            path = await self._receive(offer, safe_download_path(f"{name}{suffix}", dcc.SEARCHES_DIR))
+            path = await self._receive(offer, dl.safe_path(f"{name}{suffix}", dl.searches_dir))
         return path
 
     async def request(self, line: str) -> Path:
@@ -156,9 +149,9 @@ class EbooksPlugin:
         if not m:
             raise ValueError(f"Not a book request (expected '!<bot> <file>'): {line!r}")
         offer = await self._fetch(line, expected_sender=m.group("nick"))
-        path = await self._receive(offer, safe_download_path(offer.filename, dcc.DOWNLOADS_DIR))
+        path = await self._receive(offer, self.downloads.safe_path(offer.filename))
         if _is_zip(path.name):
-            path = extract_ebook(path)
+            path = self.downloads.extract(path)
             log.info("Extracted: %s", path)
         return path
 
@@ -186,7 +179,7 @@ class EbooksPlugin:
                 self._expected_sender = None
 
     async def _receive(self, offer: DccOffer, dest: Path) -> Path:
-        """Download a vetted offer to `dest` (built with safe_download_path).
+        """Download a vetted offer to `dest` (built with safe_path).
 
         May come back as e.g. "Dune (1).epub" if the name was taken.
         """
@@ -194,7 +187,7 @@ class EbooksPlugin:
             "DCC SEND offer: %s from %s:%s (%s bytes)",
             offer.filename, offer.ip, offer.port, offer.filesize,
         )
-        dest = await receive_dcc(offer.ip, offer.port, offer.filesize, dest)
+        dest = await self.downloads.receive(offer.ip, offer.port, offer.filesize, dest)
         log.info("Download complete: %s", dest)
         return dest
 
@@ -209,7 +202,7 @@ def _check_line(text: str, what: str) -> str:
 def _filename_part(query: str) -> str:
     """Make a query safe to embed in a filename.
 
-    safe_download_path keeps only the last path component, so "AC/DC" would
+    safe_path keeps only the last path component, so "AC/DC" would
     become "DC". Replace separators first so the whole query survives.
     """
     return re.sub(r"[/\\]", "_", query)

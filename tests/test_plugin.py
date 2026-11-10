@@ -7,9 +7,11 @@ import pytest
 import plugin
 from agent import EbooksAgent
 from config import Config, IrcConfig
-from dcc import MAX_DOWNLOAD_BYTES, FileTooLargeError, InvalidOfferError
+from dcc import FileTooLargeError, InvalidOfferError
 
 from conftest import OUR_NICK, PUBLIC_IP, ip_int, mask, offer_text
+
+MAX_DOWNLOAD_BYTES = Config().downloads.max_size_bytes
 
 
 def command(p, line):
@@ -146,14 +148,15 @@ def test_bad_offer_from_eligible_sender_fails_search_immediately(ebooks_plugin, 
     ("dune",  # sent to the channel
      f':Search!s@h.net PRIVMSG #ebooks :{offer_text()}', False),
 ])
-def test_raw_irc_lines(received, monkeypatch, term, line, accepted):
+def test_raw_irc_lines(dl, received, monkeypatch, term, line, accepted):
     # Fake zips aren't real archives; skip extraction
-    monkeypatch.setattr(plugin, "extract_ebook", lambda path, name=None: path)
+    monkeypatch.setattr(dl, "extract", lambda path, name=None: path)
 
     async def go():
         bot = EbooksAgent(Config(irc=IrcConfig(nick=OUR_NICK)))._build_bot()
         bot.privmsg = lambda *a, **k: None
         p = bot.get_plugin(plugin.EbooksPlugin)
+        p.downloads = dl  # whose receive() the `received` fixture stubbed
         # Server's NAMES reply populates the channel member list
         bot.dispatch(f":irc.irchighway.net 353 {OUR_NICK} = #ebooks :{OUR_NICK} +Search @Oatmeal someone")
         await asyncio.sleep(0)

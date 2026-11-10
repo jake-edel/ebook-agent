@@ -45,19 +45,13 @@ cp config.example.toml config.toml
 
 `config.toml` is gitignored, so your local settings stay out of commits. `config.example.toml` lists every setting with its default and what it does: IRC host, nick and channel, the timeouts, the size limits, and the downloads folder.
 
-Settings are applied in this order, each overriding the one before:
-
-1. Built-in defaults
-2. The config file. That's `config.toml` next to `ebooks_agent.py`, or the file you pass with `--config PATH`, or the one named in `$EBOOKS_CONFIG`
-3. Environment variables named `EBOOKS_<SECTION>_<KEY>`, for example `EBOOKS_IRC_NICK=my_nick` or `EBOOKS_DOWNLOADS_DIR=~/Books`
-4. Command-line flags: `--nick` and `--downloads`
+Any setting the file leaves out keeps its built-in default. The agent reads `config.toml` next to `ebooks_agent.py`, or another file if you pass one:
 
 ```bash
-python ebooks_agent.py --nick my_nick --downloads ~/Books
-EBOOKS_SEARCH_OFFER_TIMEOUT=120 python ebooks_agent.py
+python ebooks_agent.py --config ~/ebooks.toml
 ```
 
-A relative `downloads.dir` in the config file is relative to that file. From an environment variable or flag, it's relative to the current directory.
+A relative `downloads.dir` in the config file is relative to that file.
 
 Mistakes are caught at startup with a clear message, and the agent exits without connecting. That covers unknown settings (typos like `nik`), wrong types, and out-of-range values. TLS can't be turned off.
 
@@ -158,7 +152,7 @@ Both folders sit alongside the script by default.
 
 ## Notes
 
-- The default nick is `ebooks_cli`. Change it with `--nick`, `EBOOKS_IRC_NICK`, or `nick` in `config.toml`.
+- The default nick is `ebooks_cli`. Change it with `nick` in `config.toml`.
 - Timeouts (all configurable):
   - 30 seconds to connect to IRC.
   - 60 seconds for a bot to offer the file.

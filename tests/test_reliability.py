@@ -13,8 +13,6 @@ from dcc import (
     DownloadError,
     IncompleteDownloadError,
     TransferError,
-    extract_ebook,
-    receive_dcc,
 )
 
 from conftest import local_sender
@@ -25,20 +23,20 @@ def leftovers(downloads):
     return sorted(p.name for p in downloads.iterdir() if p.name.endswith(".part"))
 
 
-async def fetch(payload: bytes, size: int, dest, hang=False):
+async def fetch(dl, payload: bytes, size: int, dest, hang=False):
     server, port = await local_sender(payload, hang=hang)
     try:
-        return await receive_dcc("127.0.0.1", port, size, dest)
+        return await dl.receive("127.0.0.1", port, size, dest)
     finally:
         server.close()
 
 
 # --- short and stalled transfers -------------------------------------------
 
-def test_short_transfer_is_a_failure(downloads):
+def test_short_transfer_is_a_failure(dl, downloads):
     dest = downloads / "short.epub"
     with pytest.raises(IncompleteDownloadError, match="50 of 100"):
-        asyncio.run(fetch(b"x" * 50, 100, dest))
+        asyncio.run(fetch(dl, b"x" * 50, 100, dest))
     assert not dest.exists()
     assert leftovers(downloads) == []
 
@@ -48,18 +46,17 @@ def test_incomplete_is_a_download_error():
     assert issubclass(IncompleteDownloadError, DownloadError)
 
 
-def test_stalled_transfer_times_out(downloads, monkeypatch):
-    monkeypatch.setattr(dcc, "STALL_TIMEOUT", 0.2)
+def test_stalled_transfer_times_out(downloads, make_dl):
     dest = downloads / "stall.epub"
     with pytest.raises(TransferError, match="stalled"):
-        asyncio.run(fetch(b"x" * 1000, 1_000_000, dest, hang=True))
+        asyncio.run(fetch(make_dl(stall_timeout=0.2), b"x" * 1000, 1_000_000, dest, hang=True))
     assert not dest.exists()
     assert leftovers(downloads) == []
 
 
-def test_slow_but_steady_transfer_is_not_cut_off(downloads, monkeypatch):
+def test_slow_but_steady_transfer_is_not_cut_off(downloads, make_dl):
     # Total time exceeds the stall timeout, but no single gap does
-    monkeypatch.setattr(dcc, "STALL_TIMEOUT", 0.3)
+    dl = make_dl(stall_timeout=0.3)
 
     async def go():
         async def handle(reader, writer):
@@ -72,7 +69,7 @@ def test_slow_but_steady_transfer_is_not_cut_off(downloads, monkeypatch):
         server = await asyncio.start_server(handle, "127.0.0.1", 0)
         port = server.sockets[0].getsockname()[1]
         try:
-            return await receive_dcc("127.0.0.1", port, 50, downloads / "slow.epub")
+            return await dl.receive("127.0.0.1", port, 50, downloads / "slow.epub")
         finally:
             server.close()
 
@@ -81,53 +78,53 @@ def test_slow_but_steady_transfer_is_not_cut_off(downloads, monkeypatch):
 
 # --- connecting -------------------------------------------------------------
 
-def test_connect_timeout(downloads, monkeypatch):
-    monkeypatch.setattr(dcc, "CONNECT_TIMEOUT", 0.1)
+def test_connect_timeout(downloads, make_dl, monkeypatch):
+    dl = make_dl(connect_timeout=0.1)
 
     async def never_answers(*args, **kwargs):
         await asyncio.sleep(10)
 
     monkeypatch.setattr(dcc.asyncio, "open_connection", never_answers)
     with pytest.raises(TransferError, match="within"):
-        asyncio.run(receive_dcc("127.0.0.1", 5000, 10, downloads / "x.epub"))
+        asyncio.run(dl.receive("127.0.0.1", 5000, 10, downloads / "x.epub"))
     assert list(downloads.iterdir()) == []
 
 
-def test_connection_refused_is_a_download_error(downloads):
+def test_connection_refused_is_a_download_error(dl, downloads):
     # Grab a free port, then close it so nothing is listening there
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
     s.close()
     with pytest.raises(TransferError, match="Could not connect"):
-        asyncio.run(receive_dcc("127.0.0.1", port, 10, downloads / "x.epub"))
+        asyncio.run(dl.receive("127.0.0.1", port, 10, downloads / "x.epub"))
     assert list(downloads.iterdir()) == []
 
 
 # --- never overwrite --------------------------------------------------------
 
-def test_existing_file_is_kept_and_new_one_numbered(downloads):
+def test_existing_file_is_kept_and_new_one_numbered(dl, downloads):
     old = downloads / "Dune.epub"
     old.write_bytes(b"old copy")
-    got = asyncio.run(fetch(b"new copy", 8, downloads / "Dune.epub"))
+    got = asyncio.run(fetch(dl, b"new copy", 8, downloads / "Dune.epub"))
     assert got == downloads / "Dune (1).epub"
     assert got.read_bytes() == b"new copy"
     assert old.read_bytes() == b"old copy"
     assert leftovers(downloads) == []
 
 
-def test_numbering_skips_taken_names(downloads):
+def test_numbering_skips_taken_names(dl, downloads):
     (downloads / "Dune.epub").write_bytes(b"0")
     (downloads / "Dune (1).epub").write_bytes(b"1")
-    got = asyncio.run(fetch(b"2", 1, downloads / "Dune.epub"))
+    got = asyncio.run(fetch(dl, b"2", 1, downloads / "Dune.epub"))
     assert got == downloads / "Dune (2).epub"
 
 
-def test_failed_download_does_not_destroy_existing_file(downloads):
+def test_failed_download_does_not_destroy_existing_file(dl, downloads):
     old = downloads / "Dune.epub"
     old.write_bytes(b"old copy")
     with pytest.raises(IncompleteDownloadError):
-        asyncio.run(fetch(b"x" * 5, 100, downloads / "Dune.epub"))
+        asyncio.run(fetch(dl, b"x" * 5, 100, downloads / "Dune.epub"))
     assert old.read_bytes() == b"old copy"
     assert sorted(p.name for p in downloads.iterdir()) == ["Dune.epub"]
 
@@ -147,23 +144,23 @@ def test_finalize_never_replaces_a_symlink(downloads, outside):
     assert list(outside.iterdir()) == []
 
 
-def test_finalize_without_hard_links(downloads, monkeypatch):
+def test_finalize_without_hard_links(dl, downloads, monkeypatch):
     def no_links(*args, **kwargs):
         raise PermissionError(1, "Operation not permitted")
 
     monkeypatch.setattr(dcc.os, "link", no_links)
     (downloads / "Dune.epub").write_bytes(b"old")
-    got = asyncio.run(fetch(b"new", 3, downloads / "Dune.epub"))
+    got = asyncio.run(fetch(dl, b"new", 3, downloads / "Dune.epub"))
     assert got == downloads / "Dune (1).epub"
     assert (downloads / "Dune.epub").read_bytes() == b"old"
     assert leftovers(downloads) == []
 
 
-def test_extract_does_not_overwrite_existing_book(downloads, make_zip):
+def test_extract_does_not_overwrite_existing_book(dl, downloads, make_zip):
     old = downloads / "Dune.epub"
     old.write_bytes(b"old copy")
     zp = make_zip("Dune.zip", b"from zip")
-    out = extract_ebook(zp, "Dune")
+    out = dl.extract(zp, "Dune")
     assert out == downloads / "Dune (1).epub"
     assert out.read_bytes() == b"from zip"
     assert old.read_bytes() == b"old copy"
@@ -172,29 +169,29 @@ def test_extract_does_not_overwrite_existing_book(downloads, make_zip):
 
 # --- bad archives -----------------------------------------------------------
 
-def test_corrupt_zip_is_a_download_error(downloads):
+def test_corrupt_zip_is_a_download_error(dl, downloads):
     zp = downloads / "junk.zip"
     zp.write_bytes(b"this is not a zip file")
     with pytest.raises(BadArchiveError):
-        extract_ebook(zp, "junk")
+        dl.extract(zp, "junk")
 
 
-def test_empty_zip_is_a_download_error(downloads):
+def test_empty_zip_is_a_download_error(dl, downloads):
     zp = downloads / "empty.zip"
     with zipfile.ZipFile(zp, "w"):
         pass
     with pytest.raises(BadArchiveError, match="no files"):
-        extract_ebook(zp, "empty")
+        dl.extract(zp, "empty")
 
 
-def test_truncated_zip_member_leaves_no_partial_file(downloads, make_zip):
+def test_truncated_zip_member_leaves_no_partial_file(dl, downloads, make_zip):
     zp = make_zip("cut.zip", bytes(range(256)) * 4000)
     data = zp.read_bytes()
     # Corrupt the compressed data in the middle, keep the directory intact
     mid = len(data) // 3
     zp.write_bytes(data[:mid] + b"\xff" * 64 + data[mid + 64:])
     with pytest.raises((BadArchiveError, dcc.FileTooLargeError)):
-        extract_ebook(zp, "cut")
+        dl.extract(zp, "cut")
     assert not (downloads / "cut.epub").exists()
     assert leftovers(downloads) == []
 

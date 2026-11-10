@@ -1,20 +1,14 @@
 """Configuration loading.
 
-Settings come from four layers, each overriding the one before:
-
-1. Built-in defaults (the dataclasses below)
-2. A TOML file: --config PATH, else $EBOOKS_CONFIG, else config.toml next to this file
-3. Environment variables named EBOOKS_<SECTION>_<KEY>, e.g. EBOOKS_IRC_NICK
-4. Command-line flags (see ebooks_agent.py)
+Settings come from the built-in defaults (the dataclasses below), overridden
+by a TOML file: --config PATH, else config.toml next to this file.
 
 See config.example.toml for every setting and what it does.
 """
 
 import logging
-import os
 import re
 import tomllib
-from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, get_type_hints
@@ -23,14 +17,12 @@ log = logging.getLogger(__name__)
 
 PROJECT_DIR = Path(__file__).parent.resolve()
 DEFAULT_CONFIG_PATH = PROJECT_DIR / "config.toml"
-ENV_PREFIX = "EBOOKS_"
-CONFIG_PATH_ENV = "EBOOKS_CONFIG"
 
 MIB = 1024 * 1024
 
 
 class ConfigError(Exception):
-    """A config file, environment variable or flag has an invalid value."""
+    """The config file is missing, malformed, or has an invalid value."""
 
 
 @dataclass(frozen=True)
@@ -93,12 +85,8 @@ def _field_types(section_cls: type) -> dict[str, type]:
     return get_type_hints(section_cls)
 
 
-def _coerce(value: Any, typ: type, where: str, base_dir: Path, from_text: bool) -> Any:
-    """Check (and for env vars/flags, parse) one value against the field's type.
-
-    `from_text` is True for environment variables and flags, which are always
-    strings; TOML values already arrive with their real type.
-    """
+def _coerce(value: Any, typ: type, where: str, base_dir: Path) -> Any:
+    """Check one TOML value against the field's type."""
     def bad(expected: str):
         return ConfigError(f"{where}: expected {expected}, got {value!r}")
 
@@ -108,22 +96,12 @@ def _coerce(value: Any, typ: type, where: str, base_dir: Path, from_text: bool) 
         return value
 
     if typ is int:
-        if from_text:
-            try:
-                return int(value)
-            except ValueError:
-                raise bad("a whole number") from None
         # bool is a subclass of int in Python, so `true` would sneak through
         if not isinstance(value, int) or isinstance(value, bool):
             raise bad("a whole number")
         return value
 
     if typ is float:
-        if from_text:
-            try:
-                return float(value)
-            except ValueError:
-                raise bad("a number") from None
         if not isinstance(value, (int, float)) or isinstance(value, bool):
             raise bad("a number")
         return float(value)
@@ -132,18 +110,16 @@ def _coerce(value: Any, typ: type, where: str, base_dir: Path, from_text: bool) 
         if not isinstance(value, str) or not value.strip():
             raise bad("a path")
         path = Path(value).expanduser()
-        # Relative paths are relative to the config file (for TOML values)
-        # or the current directory (for env vars and flags)
+        # Relative paths are relative to the config file
         return (base_dir / path).resolve()
 
     raise TypeError(f"Unsupported config type {typ!r}")  # programming error
 
 
-def _apply(cfg: Config, section: str, key: str, value: Any, *,
-           where: str, base_dir: Path, from_text: bool) -> Config:
+def _apply(cfg: Config, section: str, key: str, value: Any, *, where: str, base_dir: Path) -> Config:
     """Return a copy of `cfg` with one setting changed."""
     typ = _field_types(_sections()[section])[key]
-    value = _coerce(value, typ, where, base_dir, from_text)
+    value = _coerce(value, typ, where, base_dir)
     new_section = replace(getattr(cfg, section), **{key: value})
     return replace(cfg, **{section: new_section})
 
@@ -177,67 +153,25 @@ def _load_file(cfg: Config, path: Path) -> Config:
                     f"(expected one of: {', '.join(sorted(known))})"
                 )
             cfg = _apply(cfg, section, key, value, where=f"{path}: {section}.{key}",
-                         base_dir=path.parent, from_text=False)
+                         base_dir=path.parent)
     return cfg
 
 
-def env_var_name(section: str, key: str) -> str:
-    return f"{ENV_PREFIX}{section}_{key}".upper()
+def load_config(path: Path | None = None) -> Config:
+    """Build the effective configuration: the defaults, overridden by a TOML file.
 
-
-def _load_env(cfg: Config, env: Mapping[str, str]) -> Config:
-    expected = {CONFIG_PATH_ENV}
-    for section, section_cls in _sections().items():
-        for key in _field_types(section_cls):
-            name = env_var_name(section, key)
-            expected.add(name)
-            if name in env:
-                cfg = _apply(cfg, section, key, env[name], where=name,
-                             base_dir=Path.cwd(), from_text=True)
-    # Warn (don't fail) about likely typos, e.g. EBOOKS_NICK instead of EBOOKS_IRC_NICK
-    for name in sorted(env):
-        if name.startswith(ENV_PREFIX) and name not in expected:
-            log.warning("Ignoring unknown environment variable %s", name)
-    return cfg
-
-
-def _config_path(path: Path | None, env: Mapping[str, str]) -> tuple[Path, bool]:
-    """Which config file to read, and whether it was asked for explicitly."""
-    if path is not None:
-        return path, True
-    if env.get(CONFIG_PATH_ENV):
-        return Path(env[CONFIG_PATH_ENV]).expanduser(), True
-    return DEFAULT_CONFIG_PATH, False
-
-
-def load_config(
-    path: Path | None = None,
-    env: Mapping[str, str] | None = None,
-    overrides: Mapping[tuple[str, str], Any] | None = None,
-) -> Config:
-    """Build the effective configuration from all four layers.
-
-    `path` is an explicit config file (the --config flag). `overrides` maps
-    (section, key) to a string value, for command-line flags.
+    `path` is an explicit config file (the --config flag), which must exist.
+    Without one, config.toml next to this file is used if it's there.
     Raises ConfigError with a readable message on any problem.
     """
-    env = os.environ if env is None else env
     cfg = Config()
-
-    file_path, explicit = _config_path(path, env)
+    file_path = DEFAULT_CONFIG_PATH if path is None else path.expanduser()
     if file_path.is_file():
         cfg = _load_file(cfg, file_path)
         log.info("Loaded config from %s", file_path)
-    elif explicit:
+    elif path is not None:
         # A file you asked for by name must exist; the default one is optional
         raise ConfigError(f"Config file not found: {file_path}")
-
-    cfg = _load_env(cfg, env)
-
-    for (section, key), value in (overrides or {}).items():
-        if value is not None:
-            cfg = _apply(cfg, section, key, value, where=f"--{key}",
-                         base_dir=Path.cwd(), from_text=True)
 
     _validate(cfg)
     return cfg

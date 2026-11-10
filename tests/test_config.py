@@ -1,4 +1,4 @@
-"""Configuration: defaults < config.toml < environment < flags, with clear errors."""
+"""Configuration: defaults overridden by config.toml, with clear errors."""
 
 from pathlib import Path
 
@@ -25,18 +25,18 @@ def write(tmp_path, text, name="config.toml"):
 
 
 def test_defaults_without_any_file():
-    assert load_config(env={}) == Config()
+    assert load_config() == Config()
 
 
 def test_example_file_matches_defaults():
     # The documented values must be the real defaults. `dir` is relative to
     # the file, which lives next to the code, so it resolves to the same place.
-    assert load_config(EXAMPLE, env={}) == Config()
+    assert load_config(EXAMPLE) == Config()
 
 
 def test_file_overrides_defaults(tmp_path):
     path = write(tmp_path, '[irc]\nnick = "file_nick"\n[search]\noffer_timeout = 90\n')
-    cfg = load_config(path, env={})
+    cfg = load_config(path)
     assert cfg.irc.nick == "file_nick"
     assert cfg.search.offer_timeout == 90.0
     assert cfg.irc.host == "irc.irchighway.net"  # untouched settings keep defaults
@@ -45,28 +45,7 @@ def test_file_overrides_defaults(tmp_path):
 def test_default_file_is_used_when_present(tmp_path, monkeypatch):
     path = write(tmp_path, '[irc]\nnick = "auto"\n')
     monkeypatch.setattr(config, "DEFAULT_CONFIG_PATH", path)
-    assert load_config(env={}).irc.nick == "auto"
-
-
-def test_config_path_from_env(tmp_path):
-    path = write(tmp_path, '[irc]\nnick = "via_env"\n', name="other.toml")
-    assert load_config(env={"EBOOKS_CONFIG": str(path)}).irc.nick == "via_env"
-
-
-def test_env_overrides_file(tmp_path):
-    path = write(tmp_path, '[irc]\nnick = "file_nick"\n')
-    cfg = load_config(path, env={"EBOOKS_IRC_NICK": "env_nick", "EBOOKS_IRC_PORT": "7000",
-                                 "EBOOKS_DOWNLOADS_STALL_TIMEOUT": "2.5"})
-    assert cfg.irc.nick == "env_nick"
-    assert cfg.irc.port == 7000
-    assert cfg.downloads.stall_timeout == 2.5
-
-
-def test_flags_override_env(tmp_path):
-    cfg = load_config(env={"EBOOKS_IRC_NICK": "env_nick"},
-                      overrides={("irc", "nick"): "flag_nick", ("downloads", "dir"): None})
-    assert cfg.irc.nick == "flag_nick"
-    assert cfg.downloads.dir == Config().downloads.dir  # None means "flag not given"
+    assert load_config().irc.nick == "auto"
 
 
 def test_relative_dir_in_file_is_relative_to_file(tmp_path, monkeypatch):
@@ -74,31 +53,31 @@ def test_relative_dir_in_file_is_relative_to_file(tmp_path, monkeypatch):
     sub.mkdir()
     path = write(sub, '[downloads]\ndir = "books"\n')
     monkeypatch.chdir(tmp_path)
-    assert load_config(path, env={}).downloads.dir == (sub / "books").resolve()
-
-
-def test_relative_dir_from_env_or_flag_is_relative_to_cwd(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    assert load_config(env={"EBOOKS_DOWNLOADS_DIR": "a"}).downloads.dir == tmp_path / "a"
-    assert load_config(env={}, overrides={("downloads", "dir"): "b"}).downloads.dir == tmp_path / "b"
+    assert load_config(path).downloads.dir == (sub / "books").resolve()
 
 
 def test_home_dir_expanded(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
-    cfg = load_config(env={"EBOOKS_DOWNLOADS_DIR": "~/Books"})
+    cfg = load_config(write(tmp_path, '[downloads]\ndir = "~/Books"\n'))
     assert cfg.downloads.dir == tmp_path / "Books"
+
+
+def test_config_path_with_home_dir(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    write(tmp_path, '[irc]\nnick = "from_home"\n', name="mine.toml")
+    assert load_config(Path("~/mine.toml")).irc.nick == "from_home"
 
 
 # --- errors -----------------------------------------------------------------
 
 def test_missing_explicit_file_is_an_error(tmp_path):
     with pytest.raises(ConfigError, match="not found"):
-        load_config(tmp_path / "nope.toml", env={})
+        load_config(tmp_path / "nope.toml")
 
 
 def test_invalid_toml(tmp_path):
     with pytest.raises(ConfigError, match="invalid TOML"):
-        load_config(write(tmp_path, "[irc\nnick = "), env={})
+        load_config(write(tmp_path, "[irc\nnick = "))
 
 
 @pytest.mark.parametrize("text, match", [
@@ -118,47 +97,35 @@ def test_invalid_toml(tmp_path):
 ])
 def test_bad_values_in_file(tmp_path, text, match):
     with pytest.raises(ConfigError, match=match):
-        load_config(write(tmp_path, text), env={})
-
-
-def test_bad_env_value_names_the_variable():
-    with pytest.raises(ConfigError, match="EBOOKS_IRC_PORT: expected a whole number"):
-        load_config(env={"EBOOKS_IRC_PORT": "lots"})
+        load_config(write(tmp_path, text))
 
 
 def test_all_errors_reported_together(tmp_path):
     path = write(tmp_path, '[irc]\nport = 0\nnick = "-x"\n')
     with pytest.raises(ConfigError) as e:
-        load_config(path, env={})
+        load_config(path)
     assert "irc.port" in str(e.value) and "irc.nick" in str(e.value)
 
 
 def test_downloads_dir_that_is_a_file(tmp_path):
     (tmp_path / "f").write_text("")
     with pytest.raises(ConfigError, match="not a directory"):
-        load_config(env={"EBOOKS_DOWNLOADS_DIR": str(tmp_path / "f")})
-
-
-def test_unknown_env_var_warns(caplog):
-    load_config(env={"EBOOKS_NICK": "oops"})
-    assert "EBOOKS_NICK" in caplog.text
+        load_config(write(tmp_path, '[downloads]\ndir = "f"\n'))
 
 
 # --- applying the config ----------------------------------------------------
 
-def test_dcc_configure_applies_settings(tmp_path, monkeypatch):
-    for name in ("DOWNLOADS_DIR", "MAX_DOWNLOAD_BYTES", "_DISK_HEADROOM_BYTES",
-                 "CONNECT_TIMEOUT", "STALL_TIMEOUT"):
-        monkeypatch.setattr(dcc, name, getattr(dcc, name))  # restored after the test
-    cfg = load_config(env={"EBOOKS_DOWNLOADS_DIR": str(tmp_path / "new" / "books"),
-                           "EBOOKS_DOWNLOADS_MAX_SIZE_MIB": "5",
-                           "EBOOKS_DOWNLOADS_STALL_TIMEOUT": "7"})
-    dcc.configure(cfg.downloads)
-    assert dcc.DOWNLOADS_DIR == tmp_path / "new" / "books"
-    assert dcc.DOWNLOADS_DIR.is_dir()  # created
-    assert dcc.MAX_DOWNLOAD_BYTES == 5 * 1024 * 1024
-    assert dcc.STALL_TIMEOUT == 7.0
-    assert dcc.safe_download_path("x.epub").parent == dcc.DOWNLOADS_DIR
+def test_downloads_applies_settings(tmp_path):
+    cfg = load_config(write(tmp_path, '[downloads]\ndir = "new/books"\n'
+                                      'max_size_mib = 5\nstall_timeout = 7\n'))
+    dl = dcc.Downloads(cfg.downloads)
+    assert not dl.dir.exists()  # nothing touches disk until create_dirs()
+    dl.create_dirs()
+    assert dl.dir == tmp_path / "new" / "books"
+    assert dl.dir.is_dir()
+    assert dl.max_bytes == 5 * 1024 * 1024
+    assert dl.config.stall_timeout == 7.0
+    assert dl.safe_path("x.epub").parent == dl.dir
 
 
 def test_importing_dcc_creates_nothing(tmp_path):
@@ -176,10 +143,10 @@ def test_importing_dcc_creates_nothing(tmp_path):
     assert not (tmp_path / "downloads").exists()
 
 
-def test_agent_uses_config():
+def test_agent_uses_config(tmp_path):
     import asyncio
-    cfg = load_config(env={"EBOOKS_IRC_NICK": "cfg_nick", "EBOOKS_IRC_HOST": "irc.example.net",
-                           "EBOOKS_IRC_CHANNEL": "#books", "EBOOKS_SEARCH_OFFER_TIMEOUT": "5"})
+    cfg = load_config(write(tmp_path, '[irc]\nnick = "cfg_nick"\nhost = "irc.example.net"\n'
+                                      'channel = "#books"\n[search]\noffer_timeout = 5\n'))
 
     async def go():
         return EbooksAgent(cfg)._build_bot()
@@ -191,3 +158,4 @@ def test_agent_uses_config():
     p = bot.get_plugin(__import__("plugin").EbooksPlugin)
     assert p.channel == "#books"
     assert p.offer_timeout == 5.0
+    assert p.downloads.config == cfg.downloads

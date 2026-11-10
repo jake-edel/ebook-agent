@@ -23,7 +23,7 @@ The groundwork for the planned TUI. See [`docs/tui-plan.md`](docs/tui-plan.md) f
   - **Why:** the headless mode just logs them; the TUI renders them.
   - **Also capture** NOTICE and PRIVMSG messages from bots we're waiting on, for queue position and "file not found" messages.
 
-- [ ] **0.4 Progress callback**: `dcc.py` `receive_dcc()`
+- [ ] **0.4 Progress callback**: `dcc.py` `Downloads.receive()`
   - **What:** an optional `on_progress(received, total)` callback, emitted as `Progress` events.
 - [ ] **0.5 Track requests per bot instead of one global lock**: `plugin.py`
   - **Problem:**
@@ -33,7 +33,7 @@ The groundwork for the planned TUI. See [`docs/tui-plan.md`](docs/tui-plan.md) f
     - Track a dict of pending requests keyed by the expected sender (the `!Bot` nick, or the search bot for `@search`).
     - For each one, wait for an offer from that sender (long or no timeout, with cancel), and forward that bot's notices as events.
     - Keep the existing per-offer checks: sent directly to us, public IP, size limits.
-  - The outer 60s catch-all is already gone, and transfers have their own connect and stall timeouts (`CONNECT_TIMEOUT`, `STALL_TIMEOUT` in `dcc.py`). What's left is the per-bot tracking and a longer offer wait.
+  - The outer 60s catch-all is already gone, and transfers have their own connect and stall timeouts (`downloads.connect_timeout` and `downloads.stall_timeout` in the config). What's left is the per-bot tracking and a longer offer wait.
 
 - [ ] **0.6 All output through logging**: `plugin.py`, `unix_socket.py`, `ebooks_agent.py`
   - **Problem:** once the TUI owns the terminal, a stray `print` breaks the screen.
@@ -74,9 +74,9 @@ The groundwork for the planned TUI. See [`docs/tui-plan.md`](docs/tui-plan.md) f
   - **Problem:** a client that connects and never sends anything holds a handler open forever. (A line over 64 KiB no longer crashes the handler: it's logged and the connection is closed.)
   - **Fix:** put a timeout on `readline()` and cap the length of a search term. Low risk now that only your own user can connect.
 
-- [ ] **Better names for extracted files**: `dcc.py` `extract_ebook()` — *replaced by [Phase 0.2](#phase-0--tui-backend-prerequisites) for search results*
+- [ ] **Better names for extracted files**: `dcc.py` `Downloads.extract()` — *replaced by [Phase 0.2](#phase-0--tui-backend-prerequisites) for search results*
   - **Problem:** extracted files are named after the raw search term, including any command prefix, for example `downloads/@search warhammer.txt`.
-  - **Fix:** strip `@search ` or `!Bot ` prefixes. For real books, consider keeping the name from inside the zip (after `safe_download_path`).
+  - **Fix:** strip `@search ` or `!Bot ` prefixes. For real books, consider keeping the name from inside the zip (after `safe_path`).
 
 - [ ] **Encapsulation**: `agent.py`
   - **Problem:** `agent.py` reaches into the plugin's private `_connected` attribute.
@@ -92,7 +92,7 @@ The groundwork for the planned TUI. See [`docs/tui-plan.md`](docs/tui-plan.md) f
   - **Idea:** a non-interactive mode for scripts and the socket: send `@search`, parse the results (Phase 0.1), pick the best match (prefer `.epub`, a bot that's in the channel, a reasonable size), then request it.
   - **Relation to the TUI:** the TUI is the version where you make that choice yourself.
 - [ ] **Extract more than the first file**
-  - **Idea:** `extract_ebook()` keeps only the first file from a zip and discards the rest.
+  - **Idea:** `Downloads.extract()` keeps only the first file from a zip and discards the rest.
 - [ ] **Support more DCC variants**
   - **Idea:** add passive/reverse DCC (an offer with port `0`), DCC RESUME, and IPv6 offers. All three are currently rejected or unsupported.
 
@@ -105,7 +105,7 @@ These were decided on purpose. Revisit them if the threat model changes.
 - **The sender check is "any member of `#ebooks`".** During your search window, any of the roughly 600 channel members can make an offer (to a public IP only, within the size limits).
   - Searches starting with `!Bot` are already strict: only that bot is accepted.
   - Could tighten further to voiced/op users (`+v`/`@`), or a list of known search bots.
-- **The download size limit is 100 MiB** (`MAX_DOWNLOAD_BYTES` in `dcc.py`). Raise it if large illustrated PDFs get refused.
+- **The download size limit is 100 MiB** (`downloads.max_size_mib` in the config). Raise it if large illustrated PDFs get refused.
 - **Downloaded files aren't checked.** A file named `.epub` could contain anything. Open downloads with appropriate care.
 
 ## Done
@@ -113,10 +113,10 @@ These were decided on purpose. Revisit them if the threat model changes.
 - [x] **Path traversal:** filenames from bots are cleaned up, kept inside `downloads/`, and symlinks are never followed (`O_NOFOLLOW`).
 - [x] **Offer filtering:** offers must be sent directly to our nick, arrive during an active search, come from a channel member (or the bot named in `!Bot`), and point at a public IP on port 1024 or above. Stale offers are no longer queued. Also fixed the `:Search` leading-colon bug in the event pattern.
 - [x] **No interactive prompt:** the `search>` prompt is gone. `ebooks_agent.py` runs in the foreground, logs requests and results, takes searches only over the Unix socket, and exits cleanly on Ctrl+C or SIGTERM. It no longer needs stdin, so it runs fine under `nohup`, systemd or `< /dev/null`. If the socket can't be opened, startup fails instead of leaving an agent nothing can reach. Tests in `tests/test_main.py`.
-- [x] **Configuration:** `config.py` loads the built-in defaults, then `config.toml` (or `--config`, or `$EBOOKS_CONFIG`), then `EBOOKS_<SECTION>_<KEY>` environment variables, then the `--nick` and `--downloads` flags. Unknown keys, wrong types and out-of-range values stop startup with a clear message. `config.example.toml` is the committed, documented template, and `config.toml` is gitignored. Tests in `tests/test_config.py`.
-- [x] **No module-import side effects:** `dcc.py` no longer creates `downloads/` on import. `dcc.configure()` creates it at startup.
+- [x] **Configuration:** `config.py` loads the built-in defaults, overridden by `config.toml` (or the file given with `--config`). Unknown keys, wrong types and out-of-range values stop startup with a clear message. `config.example.toml` is the committed, documented template, and `config.toml` is gitignored. Tests in `tests/test_config.py`.
+- [x] **No module-import side effects:** `dcc.py` no longer creates `downloads/` on import. `Downloads.create_dirs()` creates it at startup.
 - [x] **Download reliability:**
-  - DCC connects time out after 15s (`CONNECT_TIMEOUT`) and transfers give up after 30s without data (`STALL_TIMEOUT`). There's no limit on total time, so slow but steady downloads finish.
+  - DCC connects time out after 15s (`downloads.connect_timeout`) and transfers give up after 30s without data (`downloads.stall_timeout`). There's no limit on total time, so slow but steady downloads finish.
   - The outer 60s catch-all in `EbooksAgent.search` is gone. The 60s offer wait only starts once a search has its turn.
   - A sender that hangs up early raises `IncompleteDownloadError` instead of returning a partial file as a success.
   - Downloads and extractions go to a `name.<random>.part` file (`O_EXCL`), which is hard-linked into place under a free name (`Dune (1).epub`) only when complete. Existing files are never overwritten, and a failure only deletes our own `.part` file.
