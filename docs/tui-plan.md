@@ -94,14 +94,17 @@ Alternatives considered:
 
 ### In-process first, with a seam for a daemon
 
-The TUI talks to an `AgentService` interface:
+The TUI talks to an `AgentService` interface, defined in `core.py` and described in [`core-interface.md`](core-interface.md). In short:
 
 ```python
 class AgentService(Protocol):
-    async def search(self, query: str) -> Path: ...        # returns the results file
-    async def request(self, line: str) -> Path: ...        # returns the downloaded book
-    def events(self) -> AsyncIterator[AgentEvent]: ...     # connection, notices, progress...
+    def search(self, query: str) -> Request: ...           # returns immediately; work continues in the background
+    def request(self, line: str) -> Request: ...           # same, for a "!Bot ..." line
+    def cancel(self, request_id: str) -> None: ...
+    async def wait(self, request_id: str) -> Request: ...  # the final snapshot
+    def events(self) -> AsyncIterator[Event]: ...          # StatusChanged, RequestUpdated, BotMessage
     def status(self) -> AgentStatus: ...                   # connected?, server, nick, TLS
+    def requests(self) -> tuple[Request, ...]: ...         # every request this session
 ```
 
 - **Phase 1:** `AgentService` is the agent object itself, running in the TUI's process. The Unix socket keeps running there too, as it does in the headless agent today.
@@ -113,26 +116,28 @@ Today's headless mode (logs to the terminal, input over the socket) stays availa
 
 These come before any UI work. Each one is useful on its own. They're tracked in [`TODO.md`](../TODO.md#phase-0--tui-backend-prerequisites).
 
-1. **Results parser** (`results.py`)
+The interface these build is specified in [`core-interface.md`](core-interface.md), which supersedes the event list and per-bot details below where they differ.
+
+1. **Results parser** (`results.py`) — *done*
    - Turns a results file into a `SearchResults` object: query, list count, match count, header lines, and `items: list[ResultItem]`.
    - Each item has the bot, the request line, the title, the file type, the size in bytes and the raw line.
    - Pure code, so it's easy to test, using a trimmed copy of the real file as test data.
-2. **Separate `search()` and `request()` in the agent**
+2. **Separate `search()` and `request()` in the agent** — *done*
    - `search(query)` sends `@search <query>`, expects a zipped `.txt` back, and saves it under `searches/` with a clean name and timestamp (no `@search ` prefix).
    - `request(line)` sends the `!Bot …` line and saves the book to `downloads/`.
 3. **Event stream**
-   - An asyncio queue of typed events: `Connected`, `Disconnected`, `BotNotice`, `OfferAccepted`, `Progress`, `Completed`, `Failed`.
+   - A stream of typed events per subscriber: `StatusChanged`, `RequestUpdated` and `BotMessage` (see `core-interface.md`).
    - The headless mode just logs them; the TUI renders them.
 4. **Progress reporting**
    - `Downloads.receive` takes an optional callback that receives (bytes received, total).
 5. **Track requests per bot**
    - Bots queue requests ("you are in queue position N"), and the file can arrive minutes later, so a fixed 60s timeout is the wrong model.
    - Track pending requests by expected bot, with no global lock:
-     - wait for an offer from that sender, with a long timeout or none;
-     - show that bot's notices as `BotNotice` events.
+     - wait for an offer from that sender; the offer timeout restarts whenever the bot speaks, and a queued request has none;
+     - show that bot's notices as `BotMessage` events.
    - Several books from different bots can then be in flight while you keep browsing.
    - This replaces the single-search lock and the "separate the timeouts" TODO.
-6. **All output through logging**
+6. **All output through logging** — *done; the Log buffer handler moves to phase 1*
    - Once the TUI owns the terminal, any stray `print` breaks the screen.
    - Route all status output through `logging`, with a handler that feeds the Log buffer.
 
