@@ -8,7 +8,7 @@ The shape: commands in, events out, state on request.
 
 - **Commands** return immediately. `search()` and `request()` hand back a
   `Request` snapshot with an id; the work then happens in the background,
-  because on IRC a reply can take seconds or many minutes (bot queues).
+  because on IRC a reply can take seconds or minutes.
 - **Events** report everything that happens afterwards. Each subscriber gets
   its own stream, so several frontends can listen at once.
 - **State** (`status()`, `requests()`) gives a full picture at any time, so a
@@ -43,8 +43,6 @@ class RequestState(enum.StrEnum):
     PENDING = "pending"
     # Sent to the channel; waiting for the bot to make a DCC offer
     WAITING = "waiting"
-    # The bot told us we're in its queue (see Request.queue_position)
-    QUEUED = "queued"
     # Offer accepted; bytes are arriving (see Request.received / size)
     TRANSFERRING = "transferring"
     # Terminal states
@@ -72,8 +70,6 @@ class Request:
     # Unix timestamps
     created_at: float
     updated_at: float
-    # Set once the bot reports a queue position
-    queue_position: int | None = None
     # Set once an offer is accepted
     filename: str | None = None
     size: int | None = None
@@ -119,10 +115,11 @@ class RequestUpdated:
 
 @dataclass(frozen=True)
 class BotMessage:
-    """A NOTICE or PRIVMSG to us from a bot we have a request with.
+    """A NOTICE or PRIVMSG sent to us directly by another user (usually a bot).
 
-    e.g. "You are in queue position 2", "File not found". `request_id` links it
-    to the request it most likely belongs to, when we can tell.
+    e.g. "Searching for dune...", "File not found". `request_id` links it to
+    the request it most likely belongs to: the oldest open request naming that
+    bot, else the search in flight, else None.
     """
     nick: str
     text: str
@@ -177,7 +174,8 @@ class AgentService(Protocol):
     def events(self) -> AsyncIterator[Event]:
         """A new, independent stream of events from now on.
 
-        Each call gives its own stream. Stop iterating (or close it) to unsubscribe.
+        Each call gives its own stream, subscribed as soon as it's created.
+        Close it (aclose()) to unsubscribe.
         """
         ...
 

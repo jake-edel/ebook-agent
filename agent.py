@@ -1,19 +1,37 @@
-"""EbooksAgent — owns the IRC connection lifecycle."""
+"""EbooksAgent — owns the IRC connection and implements the core interface (core.py)."""
 
 import asyncio
+import dataclasses
 import hashlib
+import itertools
 import logging
-from pathlib import Path
+import time
+from collections.abc import AsyncIterator
 
 import irc3
 
 from config import Config
-from plugin import EbooksPlugin
+from core import (
+    AgentStatus,
+    BotMessage,
+    Event,
+    Request,
+    RequestKind,
+    RequestState,
+    RequestUpdated,
+    StatusChanged,
+)
+from dcc import DownloadError
+from plugin import EbooksPlugin, check_query, check_request
 
 log = logging.getLogger(__name__)
 
 # How long stop() waits for the server to hang up after our QUIT
 QUIT_TIMEOUT = 2.0
+
+# Progress updates closer together than this are skipped, so a fast download
+# doesn't flood subscribers
+PROGRESS_INTERVAL = 0.25
 
 # TLS is always on and isn't configurable. IRCHighway round-robins across
 # several servers, each with its own self-signed certificate, and doesn't
@@ -28,6 +46,15 @@ class EbooksAgent:
         self._config = config or Config()
         self._bot: irc3.IrcBot | None = None
         self._plugin: EbooksPlugin | None = None
+        # Every request this session, oldest first, and the task doing each
+        self._requests: dict[str, Request] = {}
+        self._tasks: dict[str, asyncio.Task] = {}
+        self._ids = itertools.count(1)
+        # One queue per events() stream
+        self._subscribers: set[asyncio.Queue[Event]] = set()
+        # The server we last joined, for status()
+        self._peer: str | None = None
+        self._fingerprint: str | None = None
 
     def _build_bot(self) -> irc3.IrcBot:
         # Configure our server / user settings
@@ -51,6 +78,7 @@ class EbooksAgent:
         # now tied to irc3 lifecycle
         plugin = bot.get_plugin(EbooksPlugin)
         plugin.configure(self._config)
+        self._attach(plugin)
         # Add our event handlers
         # 1. Listening for a connection
         # 2. Listening for the end of the channel's member list (we're in)
@@ -90,20 +118,47 @@ class EbooksAgent:
             raise TimeoutError(
                 f"Could not connect to {irc.host}:{irc.port} within {irc.connect_timeout:g}s"
             ) from None
-        self._log_tls()
 
-    def _log_tls(self):
+    def _attach(self, plugin: EbooksPlugin):
+        # Turn what the plugin hears into events
+        plugin.on_status = self._on_status
+        plugin.on_bot_message = self._on_bot_message
+
+    def _on_status(self, connected: bool, reason: str):
+        if connected:
+            self._read_tls()
+        self._emit(StatusChanged(self.status(), reason))
+
+    def _read_tls(self):
         # Record which server we landed on and its certificate fingerprint,
-        # so a change is at least visible in the logs
-        transport = self._bot.protocol.transport
+        # so a change is at least visible in the logs and in status()
+        transport = getattr(getattr(self._bot, "protocol", None), "transport", None)
+        if transport is None:
+            return
         tls = transport.get_extra_info("ssl_object")
         peer = transport.get_extra_info("peername")
         der = tls.getpeercert(binary_form=True) if tls else None
-        fp = hashlib.sha256(der).hexdigest()[:16] if der else "unknown"
-        log.info("TLS %s to %s (cert sha256 %s…, unverified)", tls.version() if tls else "?", peer[0], fp)
+        self._peer = peer[0] if peer else None
+        self._fingerprint = hashlib.sha256(der).hexdigest()[:16] if der else None
+        log.info("TLS %s to %s (cert sha256 %s…, unverified)",
+                 tls.version() if tls else "?", self._peer, self._fingerprint or "unknown")
+
+    def _on_bot_message(self, nick: str, text: str):
+        # Link it to the oldest open request naming that bot, else the search
+        # in flight (whichever channel member is answering it)
+        sent = [r for r in self._requests.values()
+                if r.state in (RequestState.WAITING, RequestState.TRANSFERRING)]
+        match = (next((r for r in sent if r.bot and r.bot.lower() == nick.lower()), None)
+                 or next((r for r in sent if r.kind is RequestKind.SEARCH), None))
+        self._emit(BotMessage(nick, text, match.id if match else None))
 
     async def stop(self, timeout: float = QUIT_TIMEOUT):
-        """Send QUIT and wait (up to `timeout`) for the server to close the connection."""
+        """Cancel outstanding requests, then send QUIT and wait (up to
+        `timeout`) for the server to close the connection."""
+        for r in self.requests():
+            self.cancel(r.id)
+        await asyncio.gather(*self._tasks.values(), return_exceptions=True)
+
         protocol = getattr(self._bot, "protocol", None)
         if protocol is None or protocol.closed:
             return  # never connected, or already gone
@@ -126,16 +181,107 @@ class EbooksAgent:
             raise RuntimeError("Not connected — call start() first")
         return self._plugin
 
+    # --- state ------------------------------------------------------------
+
+    def status(self) -> AgentStatus:
+        irc = self._config.irc
+        return AgentStatus(
+            connected=self._plugin is not None and self._plugin.ready.is_set(),
+            server=irc.host,
+            nick=self._bot.nick if self._bot else irc.nick,
+            channel=irc.channel,
+            peer=self._peer,
+            tls_fingerprint=self._fingerprint,
+        )
+
+    def requests(self) -> tuple[Request, ...]:
+        """Every request this session, oldest first, finished ones included."""
+        return tuple(self._requests.values())
+
+    # --- commands ---------------------------------------------------------
+    #
     # No catch-all timeout on either command: each stage has its own limit.
-    # The plugin waits for an offer (counted from when *this* request gets
-    # its turn, not while queued behind another), and the transfer has
-    # connect and stall timeouts, so a slow but healthy download isn't cut
-    # off partway through.
+    # The plugin waits for an offer (counted from when the line is sent), and
+    # the transfer has connect and stall timeouts, so a slow but healthy
+    # download isn't cut off partway through.
 
-    async def search(self, query: str) -> Path:
-        """`@search <query>`; returns the results file, saved in the searches dir."""
-        return await self._require_plugin().search(query)
+    def search(self, query: str) -> Request:
+        """Start an `@search <query>`; the results file is saved in the searches dir."""
+        plugin = self._require_plugin()
+        query = check_query(query)
+        return self._start(RequestKind.SEARCH, f"@search {query}", None,
+                           lambda update: plugin.search(query, update))
 
-    async def request(self, line: str) -> Path:
-        """Send a `!Bot <file>` line; returns the book, saved in the downloads dir."""
-        return await self._require_plugin().request(line)
+    def request(self, line: str) -> Request:
+        """Start a `!Bot <file>` request; the book is saved in the downloads dir."""
+        plugin = self._require_plugin()
+        line, bot = check_request(line)
+        return self._start(RequestKind.BOOK, line, bot,
+                           lambda update: plugin.request(line, update))
+
+    def cancel(self, request_id: str) -> None:
+        """Stop waiting for or receiving a request. No-op if it already finished."""
+        task = self._tasks[request_id]
+        if not self._requests[request_id].state.finished:
+            task.cancel()
+            self._update(request_id, state=RequestState.CANCELLED)
+
+    async def wait(self, request_id: str) -> Request:
+        """Wait until a request finishes and return its final snapshot."""
+        await asyncio.wait({self._tasks[request_id]})
+        return self._requests[request_id]
+
+    def _start(self, kind: RequestKind, line: str, bot: str | None, work) -> Request:
+        now = time.time()
+        req = Request(id=str(next(self._ids)), kind=kind, line=line, bot=bot,
+                      state=RequestState.PENDING, created_at=now, updated_at=now)
+        self._set(req)
+        self._tasks[req.id] = asyncio.create_task(self._run(req.id, work))
+        return req
+
+    async def _run(self, request_id: str, work):
+        """Do a request's work, recording how it ends. Cancellation is recorded by cancel()."""
+        try:
+            path = await work(lambda **changes: self._update(request_id, **changes))
+        except (TimeoutError, ConnectionError, DownloadError) as e:
+            self._update(request_id, state=RequestState.FAILED, error=str(e))
+        except Exception:
+            log.exception("%r failed unexpectedly", self._requests[request_id].line)
+            self._update(request_id, state=RequestState.FAILED,
+                         error="internal error (see agent log)")
+        else:
+            self._update(request_id, state=RequestState.DONE, path=path)
+
+    def _update(self, request_id: str, **changes):
+        old = self._requests[request_id]
+        if old.state.finished:
+            return  # e.g. a last progress report racing a cancel
+        now = time.time()
+        if (changes.keys() == {"received"} and changes["received"] != old.size
+                and now - old.updated_at < PROGRESS_INTERVAL):
+            return
+        self._set(dataclasses.replace(old, updated_at=now, **changes))
+
+    def _set(self, req: Request):
+        self._requests[req.id] = req
+        self._emit(RequestUpdated(req))
+
+    # --- events -----------------------------------------------------------
+
+    def events(self) -> AsyncIterator[Event]:
+        """A new, independent stream of events from now on. aclose() it to unsubscribe."""
+        queue: asyncio.Queue[Event] = asyncio.Queue()
+        self._subscribers.add(queue)
+        return self._stream(queue)
+
+    async def _stream(self, queue: asyncio.Queue[Event]):
+        try:
+            while True:
+                yield await queue.get()
+        finally:
+            self._subscribers.discard(queue)
+
+    def _emit(self, event: Event):
+        # Unbounded queues: events are small and progress is rate-limited
+        for queue in self._subscribers:
+            queue.put_nowait(event)

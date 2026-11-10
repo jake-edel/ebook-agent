@@ -19,14 +19,11 @@ The groundwork for the planned TUI. [`docs/core-interface.md`](docs/core-interfa
   - A `/` in a search query becomes `_` in the filename, so `AC/DC` isn't cut down to `DC`.
   - The Unix socket routes `@search …` and bare text to `search()`, and `!Bot …` to `request()`. Tests in `tests/test_routing.py`.
 
-- [ ] **0.3 Implement the core interface**: `core.py`, `agent.py`, `plugin.py`
-  - **What:** make `EbooksAgent` satisfy `AgentService`:
-    - `search()` and `request()` return a `Request` snapshot immediately and do the work in the background;
-    - add `cancel()`, `wait()`, `status()`, `requests()`, and an `events()` stream per subscriber.
-  - **Events:** `StatusChanged`, `RequestUpdated` (the full snapshot on every change) and `BotMessage`. These replace the earlier `Connected` / `OfferAccepted` / `Progress` / `Completed` / `Failed` list.
-  - **Bot messages:** every PRIVMSG and NOTICE to us is already logged verbatim (`plugin.py` `on_message()`). Turn the ones from bots we have a request with into `BotMessage` events, and parse queue positions into `QUEUED`.
-  - **Slow subscribers:** each stream has a bounded queue. When it's full, drop progress-only updates first and never drop state changes.
-  - **Depends on** 0.5 for the request table.
+- [x] **0.3 Implement the core interface**: `agent.py`
+  - `EbooksAgent` implements `AgentService`. `search()` and `request()` validate, then return a `PENDING` snapshot at once, with the work running as a task. `cancel()`, `wait()`, `status()`, `requests()` and `events()` are there too, and `stop()` cancels outstanding requests before QUIT.
+  - Events: `StatusChanged` on join and disconnect, `RequestUpdated` on every change (progress at most 4 a second), and `BotMessage` for messages sent to us, linked to a request when possible.
+  - Kept simple on purpose: no `QUEUED` state, and unbounded per-subscriber queues.
+  - Tests in `tests/test_service.py`.
 
 - [x] **0.4 Progress reporting**: `dcc.py` `Downloads.receive()`
   - `receive(..., on_progress=None)` calls `on_progress(received)` after every chunk. The caller already knows the total, and rate-limiting is left to the core.
@@ -42,7 +39,7 @@ The groundwork for the planned TUI. [`docs/core-interface.md`](docs/core-interfa
   - The log handler that feeds the TUI's Log buffer is part of TUI phase 1, not a backend prerequisite.
 
 - [ ] **0.7 Rebuild the Unix socket on the core**: `unix_socket.py`
-  - **What:** reimplement the socket on top of `search()` / `request()` and `wait()`. The current one-line-in, one-path-out protocol doesn't need to be preserved.
+  - **What:** the socket already runs on `search()` / `request()` and `wait()`, but still speaks the old one-line-in, one-path-out protocol. Redesign it (that protocol doesn't need to be preserved).
   - **Requirements:**
     - Input limits: a timeout on reading a command, so an idle client can't hold a handler forever, and a cap on query length. (A line over 64 KiB is already refused.)
     - Keep the current access rules: a private directory, mode 0600, same user only.

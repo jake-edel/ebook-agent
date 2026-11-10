@@ -57,7 +57,7 @@ def test_event_union_covers_every_event_class():
 @pytest.mark.parametrize("event", [
     StatusChanged(STATUS, reason="joined"),
     RequestUpdated(REQ),
-    BotMessage("Bsk", "You are in queue position 2", request_id="r1"),
+    BotMessage("Bsk", "File not found", request_id="r1"),
 ])
 def test_events_round_trip_through_json(event):
     data = json.loads(json.dumps(to_dict(event)))

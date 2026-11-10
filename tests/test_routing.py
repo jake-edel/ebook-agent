@@ -11,6 +11,7 @@ import dcc
 import plugin
 import unix_socket as us
 from config import ConfigError, load_config
+from core import Request, RequestKind, RequestState
 
 from conftest import OUR_NICK, make_plugin, mask, offer_text
 
@@ -141,13 +142,20 @@ class RoutingAgent:
     def __init__(self):
         self.calls = []
 
-    async def search(self, query):
-        self.calls.append(("search", query))
-        return "results.txt"
+    def _done(self, kind):
+        return Request(id="1", kind=kind, line="", bot=None, state=RequestState.DONE,
+                       created_at=0, updated_at=0, path="file")
 
-    async def request(self, line):
+    def search(self, query):
+        self.calls.append(("search", query))
+        return self._done(RequestKind.SEARCH)
+
+    def request(self, line):
         self.calls.append(("request", line))
-        return "book.epub"
+        return self._done(RequestKind.BOOK)
+
+    async def wait(self, request_id):
+        return self._done(RequestKind.SEARCH)
 
 
 @pytest.mark.parametrize("line, expected", [

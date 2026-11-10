@@ -200,13 +200,13 @@ def test_truncated_zip_member_leaves_no_partial_file(dl, downloads, make_zip):
 
 def test_socket_reports_unexpected_errors(runtime_dir):
     path = runtime_dir / "ebooks.sock"
-    agent = FakeAgent(error=RuntimeError("boom"))
+    agent = FakeAgent(bug=RuntimeError("boom"))
 
     async def go():
         task = await start_server(agent, path)
         first = await ask(path, b"one\n")
         # The server is still alive afterwards
-        agent.error, agent.result = None, "/tmp/ok.epub"
+        agent.bug, agent.result = None, "/tmp/ok.epub"
         second = await ask(path, b"two\n")
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)

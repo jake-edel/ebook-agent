@@ -35,7 +35,7 @@ def test_serves_requests_until_stopped(runtime_dir, caplog):
 
 def test_failed_search_is_logged(runtime_dir, caplog):
     path = runtime_dir / "ebooks.sock"
-    agent = FakeAgent(error=TimeoutError("no offer"))
+    agent = FakeAgent(error="no offer")
 
     async def go():
         stop = asyncio.Event()

@@ -8,7 +8,7 @@ import stat
 import pytest
 
 import unix_socket as us
-from dcc import DownloadError
+from core import Request, RequestKind, RequestState
 
 
 @pytest.fixture
@@ -29,14 +29,28 @@ def fake_tmp(tmp_path, monkeypatch):
 
 
 class FakeAgent:
-    def __init__(self, result=None, error=None):
-        self.result, self.error, self.terms = result, error, []
+    """The parts of the core interface the socket uses.
 
-    async def search(self, term):
+    `error` makes requests fail with that message; `bug` is raised from
+    search() itself, like a programming error would be.
+    """
+
+    def __init__(self, result=None, error=None, bug=None):
+        self.result, self.error, self.bug, self.terms = result, error, bug, []
+
+    def search(self, term):
         self.terms.append(term)
+        if self.bug:
+            raise self.bug
+        return Request(id="1", kind=RequestKind.SEARCH, line=f"@search {term}", bot=None,
+                       state=RequestState.PENDING, created_at=0, updated_at=0)
+
+    async def wait(self, request_id):
         if self.error:
-            raise self.error
-        return self.result
+            return Request(id=request_id, kind=RequestKind.SEARCH, line="", bot=None,
+                           state=RequestState.FAILED, created_at=0, updated_at=0, error=self.error)
+        return Request(id=request_id, kind=RequestKind.SEARCH, line="", bot=None,
+                       state=RequestState.DONE, created_at=0, updated_at=0, path=self.result)
 
 
 def mode(path):
@@ -155,7 +169,7 @@ def test_socket_is_0600_and_answers_searches(runtime_dir, tmp_path):
 
 def test_errors_reported_to_client(runtime_dir):
     path = runtime_dir / "ebooks.sock"
-    agent = FakeAgent(error=DownloadError("too big"))
+    agent = FakeAgent(error="too big")
 
     async def go():
         task = await start_server(agent, path)

@@ -21,7 +21,7 @@ import struct
 import tempfile
 from pathlib import Path
 
-from dcc import DownloadError
+from core import RequestState
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +34,10 @@ class UnsafeSocketPathError(RuntimeError):
 
 class SocketUnavailableError(RuntimeError):
     """The socket server couldn't be started."""
+
+
+class RequestFailedError(Exception):
+    """A request ended without a file; the message says why."""
 
 
 def _is_private_dir(path: Path) -> bool:
@@ -120,14 +124,19 @@ def _peer_uid(writer: asyncio.StreamWriter) -> int | None:
 _SEARCH_PREFIX = "@search "
 
 
-async def _dispatch(agent, line: str):
-    """Route a socket line to the agent's request() or search()."""
+async def _dispatch(agent, line: str) -> Path:
+    """Route a socket line to the agent's request() or search() and wait for the file."""
     if line.startswith("!"):
-        return await agent.request(line)
-    # Accept the IRC form too, so "@search dune" doesn't become "@search @search dune"
-    if line.lower().startswith(_SEARCH_PREFIX):
-        line = line[len(_SEARCH_PREFIX):]
-    return await agent.search(line)
+        req = agent.request(line)
+    else:
+        # Accept the IRC form too, so "@search dune" doesn't become "@search @search dune"
+        if line.lower().startswith(_SEARCH_PREFIX):
+            line = line[len(_SEARCH_PREFIX):]
+        req = agent.search(line)
+    final = await agent.wait(req.id)
+    if final.state is not RequestState.DONE:
+        raise RequestFailedError(final.error or final.state.value)
+    return final.path
 
 
 # Factory function that closes over agent, making it available to handle()
@@ -155,7 +164,7 @@ def _make_handler(agent):
                 path = await _dispatch(agent, term)
                 reply = f"{path}\n"
                 log.info("Saved: %s", path)
-            except (TimeoutError, DownloadError, ValueError) as e:
+            except (RequestFailedError, ValueError) as e:
                 reply = f"error: {e}\n"
                 log.warning("Failed: %s — %s", term, e)
             except Exception:
