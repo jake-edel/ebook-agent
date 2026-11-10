@@ -52,9 +52,16 @@ class EbooksAgent:
         plugin.offer_timeout = self._config.search.offer_timeout
         # Add our event handlers
         # 1. Listening for a connection
-        # 2. Listening for a DCC file send
+        # 2. Logging every message addressed to us
+        # 3. Listening for a DCC file send
         bot.attach_events(
             irc3.event(irc3.rfc.CONNECTED, plugin.on_connected),
+            irc3.event(
+                # Any PRIVMSG/NOTICE. The prefix is optional and needn't be a
+                # nick!user@host, so server notices are caught too.
+                r"^(@(?P<tags>\S+) )?(:(?P<mask>\S+) )?(?P<command>PRIVMSG|NOTICE) (?P<target>\S+) :(?P<text>.*)",
+                plugin.on_message,
+            ),
             irc3.event(
                 # Mirrors irc3's own PRIVMSG pattern: optional IRCv3 tags, then the
                 # ":" prefix marker *outside* the mask group so the nick parses as

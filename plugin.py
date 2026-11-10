@@ -64,6 +64,13 @@ class EbooksPlugin:
         members = self.bot.channels.get(self.channel, ())
         return any(m.lower() == nick.lower() for m in members)
 
+    def on_message(self, mask=None, command=None, target=None, text=None, **kwargs):
+        # Log everything addressed to us (DMs, bot replies, DCC offers, server
+        # notices) verbatim. Channel chatter is skipped — it would drown the log.
+        if target and target[0] in "#&+!":
+            return
+        log.info("%s from %s to %s: %r", command, mask or "server", target, text)
+
     def on_dcc_send(self, mask=None, target=None, text=None, **kwargs):
         sender = getattr(mask, "nick", None) or str(mask).split("!", 1)[0]
 

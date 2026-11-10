@@ -168,3 +168,31 @@ def test_raw_irc_lines(received, monkeypatch, term, line, accepted):
 
     res = run(go())
     assert (res is not None) == accepted
+
+
+# --- message logging --------------------------------------------------------
+
+@pytest.mark.parametrize("line, expected", [
+    (f':Search!s@h.net PRIVMSG {OUR_NICK} :{offer_text("results.txt.zip")}',
+     f"PRIVMSG from Search!s@h.net to {OUR_NICK}: {offer_text('results.txt.zip')!r}"),
+    (f':Mallory!m@evil.net PRIVMSG {OUR_NICK} :hey, you a bot?',
+     f"PRIVMSG from Mallory!m@evil.net to {OUR_NICK}: 'hey, you a bot?'"),
+    (f':Oatmeal!o@host.net NOTICE {OUR_NICK} :You are in queue position 2',
+     f"NOTICE from Oatmeal!o@host.net to {OUR_NICK}: 'You are in queue position 2'"),
+    (f'@time=2026-11-06T12:00:00Z :irc.irchighway.net NOTICE {OUR_NICK} :Welcome',
+     f"NOTICE from irc.irchighway.net to {OUR_NICK}: 'Welcome'"),
+    ("NOTICE * :*** Looking up your hostname", "NOTICE from server to *: '*** Looking up your hostname'"),
+    (':Search!s@h.net PRIVMSG #ebooks :channel chatter', None),
+])
+def test_messages_to_us_logged_verbatim(caplog, line, expected):
+    async def go():
+        bot = EbooksAgent(Config(irc=IrcConfig(nick=OUR_NICK)))._build_bot()
+        bot.dispatch(line)
+        await asyncio.sleep(0)  # irc3 runs handlers via call_soon
+
+    with caplog.at_level("INFO", logger="plugin"):
+        run(go())
+    # Only the verbatim lines; the DCC handler may log its own verdict too
+    logged = [r.getMessage() for r in caplog.records
+              if r.name == "plugin" and r.getMessage().startswith(("PRIVMSG", "NOTICE"))]
+    assert logged == ([expected] if expected else [])
