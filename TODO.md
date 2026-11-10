@@ -15,6 +15,8 @@ The groundwork for the planned TUI. [`docs/core-interface.md`](docs/core-interfa
 - [x] **0.2 Separate `search()` and `request()`**: `agent.py`, `plugin.py`
   - `search(query)` sends `@search <query>` and saves the results to `searches/<timestamp> <query>.txt`, unzipped and without the `@search ` prefix.
   - `request(line)` sends a `!Bot …` line, accepts an offer only from that bot, and saves the book to `downloads/` under the bot's filename (or the name inside the zip).
+  - Both refuse input containing CR, LF or NUL (IRC command injection) before sending anything, and `request()` refuses anything that isn't `!<bot> <file>`.
+  - A `/` in a search query becomes `_` in the filename, so `AC/DC` isn't cut down to `DC`.
   - The Unix socket routes `@search …` and bare text to `search()`, and `!Bot …` to `request()`. Tests in `tests/test_routing.py`.
 
 - [ ] **0.3 Implement the core interface**: `core.py`, `agent.py`, `plugin.py`
