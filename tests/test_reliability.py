@@ -232,3 +232,21 @@ def test_socket_survives_oversized_line(runtime_dir):
     bad, good = asyncio.run(go())
     assert bad == b""
     assert good == b"/tmp/ok.epub\n"
+
+
+# --- progress -----------------------------------------------------------------
+
+def test_progress_reported_per_chunk(dl, downloads):
+    seen = []
+
+    async def go():
+        server, port = await local_sender(b"x" * 200_000)
+        try:
+            return await dl.receive("127.0.0.1", port, 200_000, downloads / "p.epub",
+                                    on_progress=seen.append)
+        finally:
+            server.close()
+
+    asyncio.run(go())
+    assert seen and seen == sorted(seen)
+    assert seen[-1] == 200_000

@@ -10,6 +10,7 @@ import shutil
 import struct
 import zipfile
 import zlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -239,8 +240,13 @@ class Downloads:
             raise UnsafeFilenameError(f"Refusing path outside {directory}: {name!r}")
         return dest
 
-    async def receive(self, ip: str, port: int, filesize: int, dest: Path) -> Path:
+    async def receive(
+        self, ip: str, port: int, filesize: int, dest: Path,
+        on_progress: Callable[[int], None] | None = None,
+    ) -> Path:
         """Download a DCC file into `dest`'s directory and return where it was saved.
+
+        `on_progress(received)` is called after every chunk with the bytes so far.
 
         `dest` must sit directly in one of the save dirs (use safe_path to
         build it).
@@ -294,6 +300,8 @@ class Downloads:
                         writer.write(struct.pack("!I", received))
                         # Flush the write buffer — actually send the ack over the wire
                         await writer.drain()
+                        if on_progress:
+                            on_progress(received)
 
             if received != filesize:
                 raise IncompleteDownloadError(

@@ -28,8 +28,8 @@ The groundwork for the planned TUI. [`docs/core-interface.md`](docs/core-interfa
   - **Slow subscribers:** each stream has a bounded queue. When it's full, drop progress-only updates first and never drop state changes.
   - **Depends on** 0.5 for the request table.
 
-- [ ] **0.4 Progress reporting**: `dcc.py` `Downloads.receive()`
-  - **What:** an optional `on_progress(received, total)` callback. The core turns it into `RequestUpdated` events, rate-limited so fast downloads don't flood subscribers.
+- [x] **0.4 Progress reporting**: `dcc.py` `Downloads.receive()`
+  - `receive(..., on_progress=None)` calls `on_progress(received)` after every chunk. The caller already knows the total, and rate-limiting is left to the core.
 
 - [ ] **0.5 Track requests per bot instead of one global lock**: `plugin.py`
   - **Problem:** bots queue requests ("you are in queue position N") and offers can arrive minutes later, but a single lock with a fixed 60s offer timeout lets one slow bot block everything.
