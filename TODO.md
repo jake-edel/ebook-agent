@@ -31,16 +31,11 @@ The groundwork for the planned TUI. [`docs/core-interface.md`](docs/core-interfa
 - [x] **0.4 Progress reporting**: `dcc.py` `Downloads.receive()`
   - `receive(..., on_progress=None)` calls `on_progress(received)` after every chunk. The caller already knows the total, and rate-limiting is left to the core.
 
-- [ ] **0.5 Track requests per bot instead of one global lock**: `plugin.py`
-  - **Problem:** bots queue requests ("you are in queue position N") and offers can arrive minutes later, but a single lock with a fixed 60s offer timeout lets one slow bot block everything.
-  - **Fix:** a table of in-flight requests, matched to offers like this (decided 2026-11-09):
-    - **Books:** matched by the `!Bot` nick. Several requests to the same bot are matched in the order they were sent, which is how bots serve them. Requests to different bots run in parallel.
-    - **Searches:** one in flight at a time, because any channel member can answer. Later searches wait in `PENDING`.
-  - **Timeouts** (decided 2026-11-09):
-    - `WAITING` keeps the offer timeout (`search.offer_timeout`, 60s), but any message from that bot restarts it.
-    - `QUEUED` has no timeout. You cancel it yourself.
-    - `TRANSFERRING` keeps the existing connect and stall timeouts.
-  - **Keep** the existing per-offer checks: sent directly to us, from a channel member (or the named bot), to a public IP, within the size limits.
+- [x] **0.5 Track requests per bot instead of one global lock**: `plugin.py`
+  - A list of lines waiting for an offer replaces the single pending slot. An offer goes to the oldest open request naming its sender (bots serve requests in order), otherwise to the search in flight, otherwise it's dropped as unsolicited.
+  - Book requests to different bots run in parallel. Searches still go one at a time, because any channel member can answer one.
+  - Each request keeps the plain offer timeout (`search.offer_timeout`, 60s), counted from when its line is sent. Queue detection and restarting the timer on bot messages were dropped: queues have only ever lasted a few seconds.
+  - The existing per-offer checks are unchanged.
 
 - [x] **0.6 All output through logging**
   - All status output goes through `logging`. The only `print`s left are startup errors to stderr in `ebooks_agent.py`, before any UI exists.
@@ -55,22 +50,8 @@ The groundwork for the planned TUI. [`docs/core-interface.md`](docs/core-interfa
 
 ## Connection lifecycle
 
-- [ ] **Report "connected" only after the JOIN is confirmed**: `plugin.py` `on_connected()`, `agent.py` `start()`
-  - **Problem:**
-    - `_connected` is set right after *sending* `JOIN`, so a fast first search could be sent before we're actually in `#ebooks`, and before the member list used by the sender check is filled in.
-    - `agent.py` waits on the plugin's private `_connected` event.
-  - **Fix:**
-    - Mark the connection ready on the end-of-NAMES reply (366) for our channel.
-    - Expose it as a public `wait_ready()` on the plugin.
-    - Emit `StatusChanged` for connected, joined, disconnected and reconnecting once 0.3 lands.
-
-- [ ] **Handle disconnects and reconnects**: `plugin.py`, `agent.py`
-  - **Problem:** irc3 reconnects automatically, but `_connected` is never cleared, so a search sent during a disconnect is silently lost, and one waiting on an offer just times out.
-  - **Fix** (decided 2026-11-09):
-    - Clear the ready state when the connection drops.
-    - `PENDING` requests wait for the reconnect.
-    - `WAITING` and `QUEUED` requests fail with a clear error. The bot's queue entry is gone once our nick drops, so they aren't resent automatically.
-    - Transfers in progress continue, because DCC is a separate connection.
+- [x] **Report "connected" only after the JOIN is confirmed**: the plugin's public `ready` event is set on the end-of-NAMES reply (366) for our channel, so nothing is sent before we're in it and the member list is filled in.
+- [x] **Handle disconnects and reconnects**: `ready` is cleared when the connection drops. Lines not sent yet wait for the reconnect, lines waiting for an offer fail with a clear error (the bot's queue entry is gone with our nick), and transfers carry on.
 
 ## Robustness / polish
 

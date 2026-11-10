@@ -30,7 +30,7 @@ def serve(dl, monkeypatch):
     """Fake the DCC transfer: write `serve.payload` to wherever we're told."""
     calls = []
 
-    async def fake_receive(ip, port, size, dest):
+    async def fake_receive(ip, port, size, dest, on_progress=None):
         calls.append(dest)
         # Like the real thing: write a .part, then move it to a free name
         part = dest.with_name(dest.name + ".part")

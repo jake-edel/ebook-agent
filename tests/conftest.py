@@ -2,6 +2,7 @@
 
 import asyncio
 import ipaddress
+import types
 import zipfile
 
 import pytest
@@ -65,6 +66,7 @@ def make_plugin(dl: Downloads, bot=None) -> plugin.EbooksPlugin:
     """An EbooksPlugin that saves through `dl` (so its receive can be stubbed)."""
     p = plugin.EbooksPlugin(bot or FakeBot())
     p.downloads = dl
+    p.ready.set()  # as if we'd joined the channel
     return p
 
 
@@ -91,6 +93,7 @@ class FakeBot:
 
     def __init__(self, members=("Search", "Oatmeal")):
         self.nick = OUR_NICK
+        self.config = types.SimpleNamespace(host="irc.example.net")
         self.channels = {IrcConfig().channel: set(members) | {OUR_NICK}}
         self.sent = []
 
@@ -103,7 +106,7 @@ def received(dl, monkeypatch):
     """Replace the real DCC transfer with a stub that records calls and writes a byte."""
     calls = []
 
-    async def fake_receive(ip, port, size, dest):
+    async def fake_receive(ip, port, size, dest, on_progress=None):
         calls.append((ip, port, size, dest))
         dest.write_bytes(b"x")
         return dest

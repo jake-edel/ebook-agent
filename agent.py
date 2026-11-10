@@ -53,10 +53,12 @@ class EbooksAgent:
         plugin.configure(self._config)
         # Add our event handlers
         # 1. Listening for a connection
-        # 2. Logging every message addressed to us
-        # 3. Listening for a DCC file send
+        # 2. Listening for the end of the channel's member list (we're in)
+        # 3. Logging every message addressed to us
+        # 4. Listening for a DCC file send
         bot.attach_events(
             irc3.event(irc3.rfc.CONNECTED, plugin.on_connected),
+            irc3.event(irc3.rfc.RPL_ENDOFNAMES, plugin.on_names_end),
             irc3.event(
                 # Any PRIVMSG/NOTICE. The prefix is optional and needn't be a
                 # nick!user@host, so server notices are caught too.
@@ -83,7 +85,7 @@ class EbooksAgent:
         irc = self._config.irc
         try:
             async with asyncio.timeout(irc.connect_timeout):
-                await self._plugin._connected.wait()
+                await self._plugin.ready.wait()
         except TimeoutError:
             raise TimeoutError(
                 f"Could not connect to {irc.host}:{irc.port} within {irc.connect_timeout:g}s"

@@ -29,6 +29,10 @@ class FakeIrcServer:
                 writer.write(f":srv 001 {OUR_NICK} :hi\r\n:srv 376 {OUR_NICK} :End\r\n".encode())
                 await writer.drain()
                 welcomed = True
+            if line.startswith("JOIN"):
+                channel = line.split()[1]
+                writer.write(f":srv 366 {OUR_NICK} {channel} :End of /NAMES list.\r\n".encode())
+                await writer.drain()
             if line.startswith("QUIT") and self.close_on_quit:
                 break
         writer.close()

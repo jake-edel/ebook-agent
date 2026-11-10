@@ -9,7 +9,7 @@ from agent import EbooksAgent
 from config import Config, IrcConfig
 from dcc import FileTooLargeError, InvalidOfferError
 
-from conftest import OUR_NICK, PUBLIC_IP, ip_int, mask, offer_text
+from conftest import OUR_NICK, PUBLIC_IP, FakeBot, ip_int, make_plugin, mask, offer_text
 
 MAX_DOWNLOAD_BYTES = Config().downloads.max_size_bytes
 
@@ -54,13 +54,13 @@ def test_ignored_offers(ebooks_plugin, received, label, term, deliveries):
         assert res is None, label
         assert not received
     run(go())
-    assert ebooks_plugin._pending is None  # slot cleared after cancel
+    assert ebooks_plugin._waiters == []  # cleared after cancel
 
 
 def test_unsolicited_offer_dropped_and_not_used_later(ebooks_plugin, received):
     async def go():
         ebooks_plugin.on_dcc_send(mask=mask("Oatmeal"), target=OUR_NICK, text=offer_text("stale.epub"))
-        assert ebooks_plugin._pending is None
+        assert ebooks_plugin._waiters == []
         # The next search must not be satisfied by the stale offer
         assert await search_with(ebooks_plugin, "dune", []) is None
     run(go())
@@ -71,7 +71,7 @@ def test_late_offer_after_search_dropped(ebooks_plugin, received):
         res = await search_with(ebooks_plugin, "dune", [("Oatmeal", OUR_NICK, offer_text())])
         assert res is not None
         ebooks_plugin.on_dcc_send(mask=mask("Oatmeal"), target=OUR_NICK, text=offer_text("late.epub"))
-        assert ebooks_plugin._pending is None
+        assert ebooks_plugin._waiters == []
     run(go())
 
 
@@ -106,19 +106,110 @@ def test_first_valid_offer_wins(ebooks_plugin, received):
     assert [port for _, port, _, _ in received] == [5001]
 
 
-def test_concurrent_searches_each_get_their_own_offer(ebooks_plugin, received):
+def offer_from(p, nick, name, port=5000):
+    p.on_dcc_send(mask=mask(nick), target=OUR_NICK, text=offer_text(name, port=port))
+
+
+def test_offer_goes_to_the_request_naming_that_bot(ebooks_plugin, received):
     async def go():
-        t1 = asyncio.create_task(ebooks_plugin.search("one"))
-        t2 = asyncio.create_task(ebooks_plugin.request("!Oatmeal two.epub"))
+        search = asyncio.create_task(ebooks_plugin.search("one"))
+        book = asyncio.create_task(ebooks_plugin.request("!Oatmeal two.epub"))
         await asyncio.sleep(0.01)
-        ebooks_plugin.on_dcc_send(mask=mask("Oatmeal"), target=OUR_NICK, text=offer_text("one.epub"))
-        await asyncio.sleep(0.01)
-        ebooks_plugin.on_dcc_send(mask=mask("Oatmeal"), target=OUR_NICK, text=offer_text("two.epub"))
-        return await asyncio.gather(t1, t2)
+        # Oatmeal's offer goes to the request naming it, even though the
+        # search is also open and was sent first
+        offer_from(ebooks_plugin, "Oatmeal", "two.epub")
+        offer_from(ebooks_plugin, "Search", "one.txt")
+        return await asyncio.gather(search, book)
 
     r1, r2 = run(go())
-    assert r1.name.endswith(" one.epub")
+    assert r1.name.endswith(" one.txt")
     assert r2.name == "two.epub"
+
+
+def test_requests_to_one_bot_are_matched_in_order(ebooks_plugin, received):
+    async def go():
+        a = asyncio.create_task(ebooks_plugin.request("!Oatmeal a.epub"))
+        await asyncio.sleep(0.01)
+        b = asyncio.create_task(ebooks_plugin.request("!Oatmeal b.epub"))
+        await asyncio.sleep(0.01)
+        offer_from(ebooks_plugin, "Oatmeal", "first.epub", port=5001)
+        offer_from(ebooks_plugin, "Oatmeal", "second.epub", port=5002)
+        return await asyncio.gather(a, b)
+
+    a, b = run(go())
+    assert (a.name, b.name) == ("first.epub", "second.epub")
+
+
+def test_requests_to_different_bots_run_in_parallel(dl, received):
+    p = make_plugin(dl, FakeBot(members=("Search", "Oatmeal", "Bsk")))
+
+    async def go():
+        slow = asyncio.create_task(p.request("!Oatmeal slow.epub"))
+        fast = asyncio.create_task(p.request("!Bsk fast.epub"))
+        await asyncio.sleep(0.01)
+        # Both lines went out at once; Bsk answers while Oatmeal is silent
+        assert [line for _, line in p.bot.sent] == ["!Oatmeal slow.epub", "!Bsk fast.epub"]
+        offer_from(p, "Bsk", "fast.epub")
+        path = await asyncio.wait_for(fast, 1)
+        slow.cancel()
+        return path
+
+    assert run(go()).name == "fast.epub"
+
+
+def test_second_search_waits_for_the_first(ebooks_plugin, received):
+    async def go():
+        a = asyncio.create_task(ebooks_plugin.search("one"))
+        b = asyncio.create_task(ebooks_plugin.search("two"))
+        await asyncio.sleep(0.01)
+        assert ebooks_plugin.bot.sent == [("#ebooks", "@search one")]
+        offer_from(ebooks_plugin, "Search", "one.txt")
+        await asyncio.wait_for(a, 1)
+        await asyncio.sleep(0.01)
+        assert ebooks_plugin.bot.sent[-1] == ("#ebooks", "@search two")
+        b.cancel()
+
+    run(go())
+
+
+# --- connection state ---------------------------------------------------------
+
+def test_nothing_sent_until_ready(ebooks_plugin, received):
+    async def go():
+        ebooks_plugin.ready.clear()
+        task = asyncio.create_task(ebooks_plugin.search("dune"))
+        await asyncio.sleep(0.01)
+        assert ebooks_plugin.bot.sent == []
+        ebooks_plugin.on_names_end(channel="#ebooks")
+        await asyncio.sleep(0.01)
+        assert ebooks_plugin.bot.sent == [("#ebooks", "@search dune")]
+        task.cancel()
+
+    run(go())
+
+
+def test_disconnect_fails_requests_waiting_for_an_offer(ebooks_plugin, received):
+    async def go():
+        task = asyncio.create_task(ebooks_plugin.request("!Oatmeal Dune.epub"))
+        await asyncio.sleep(0.01)
+        ebooks_plugin.connection_lost()
+        with pytest.raises(ConnectionError):
+            await asyncio.wait_for(task, 1)
+        assert not ebooks_plugin.ready.is_set()
+
+    run(go())
+
+
+def test_ready_only_for_our_channel(ebooks_plugin):
+    statuses = []
+    ebooks_plugin.on_status = lambda connected, reason: statuses.append(connected)
+    ebooks_plugin.ready.clear()
+    ebooks_plugin.on_names_end(channel="#other")
+    assert not ebooks_plugin.ready.is_set()
+    ebooks_plugin.on_names_end(channel="#EBOOKS")
+    assert ebooks_plugin.ready.is_set()
+    ebooks_plugin.connection_lost()
+    assert statuses == [True, False]
 
 
 # --- bad offers from an eligible sender fail fast -------------------------
@@ -131,7 +222,7 @@ def test_bad_offer_from_eligible_sender_fails_search_immediately(ebooks_plugin, 
     with pytest.raises(error):
         run(search_with(ebooks_plugin, "dune", [("Search", OUR_NICK, text)]))
     assert not received
-    assert ebooks_plugin._pending is None
+    assert ebooks_plugin._waiters == []
 
 
 # --- end to end through irc3's real line dispatch -------------------------
@@ -159,6 +250,7 @@ def test_raw_irc_lines(dl, received, monkeypatch, term, line, accepted):
         p.downloads = dl  # whose receive() the `received` fixture stubbed
         # Server's NAMES reply populates the channel member list
         bot.dispatch(f":irc.irchighway.net 353 {OUR_NICK} = #ebooks :{OUR_NICK} +Search @Oatmeal someone")
+        bot.dispatch(f":irc.irchighway.net 366 {OUR_NICK} #ebooks :End of /NAMES list.")
         await asyncio.sleep(0)
 
         task = asyncio.create_task(command(p, term))
