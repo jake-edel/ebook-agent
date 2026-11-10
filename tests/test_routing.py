@@ -187,3 +187,17 @@ def test_searches_dir_must_differ_from_downloads(tmp_path):
         path = tmp_path / "config.toml"
         path.write_text('[downloads]\ndir = "x"\nsearches_dir = "x"\n')
         load_config(path)
+
+
+@pytest.mark.parametrize("raw, expected", [("true", True), ("false", False)])
+def test_show_private_messages_from_toml(tmp_path, raw, expected):
+    path = tmp_path / "config.toml"
+    path.write_text(f"[irc]\nshow_private_messages = {raw}\n")
+    assert load_config(path).irc.show_private_messages is expected
+
+
+def test_show_private_messages_must_be_bool(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('[irc]\nshow_private_messages = "false"\n')
+    with pytest.raises(ConfigError, match="true or false"):
+        load_config(path)

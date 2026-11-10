@@ -34,6 +34,8 @@ class IrcConfig:
     channel: str = "#ebooks"
     # Seconds to wait for the server connection and channel join at startup
     connect_timeout: float = 30.0
+    # Log messages addressed to us (DMs, bot replies, server notices)
+    show_private_messages: bool = True
 
 
 @dataclass(frozen=True)
@@ -93,6 +95,11 @@ def _coerce(value: Any, typ: type, where: str, base_dir: Path) -> Any:
     if typ is str:
         if not isinstance(value, str):
             raise bad("a string")
+        return value
+
+    if typ is bool:
+        if not isinstance(value, bool):
+            raise bad("true or false")
         return value
 
     if typ is int:

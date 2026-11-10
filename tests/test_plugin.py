@@ -291,3 +291,23 @@ def test_messages_to_us_logged_verbatim(caplog, line, expected):
     logged = [r.getMessage() for r in caplog.records
               if r.name == "plugin" and r.getMessage().startswith(("PRIVMSG", "NOTICE"))]
     assert logged == ([expected] if expected else [])
+
+
+# --- logging private messages ---------------------------------------------
+
+@pytest.mark.parametrize("show, logged", [(True, True), (False, False)])
+def test_show_private_messages(ebooks_plugin, caplog, show, logged):
+    ebooks_plugin.show_private_messages = show
+    with caplog.at_level("INFO", logger="plugin"):
+        ebooks_plugin.on_message(mask=mask("Search"), command="NOTICE",
+                                 target=OUR_NICK, text="hello there")
+    assert ("hello there" in caplog.text) is logged
+
+
+def test_hidden_private_messages_still_passed_on(ebooks_plugin):
+    ebooks_plugin.show_private_messages = False
+    got = []
+    ebooks_plugin.on_bot_message = lambda nick, text: got.append((nick, text))
+    ebooks_plugin.on_message(mask=mask("Search"), command="NOTICE",
+                             target=OUR_NICK, text="hello there")
+    assert got == [("Search", "hello there")]

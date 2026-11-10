@@ -16,6 +16,8 @@ nick = "ebooks_cli"
 channel = "#ebooks"
 # Seconds to wait for the connection and channel join at startup
 connect_timeout = 30
+# Log messages addressed to us: DMs, bot replies, DCC offers, server notices
+show_private_messages = true
 
 [search]
 # Seconds to wait for a bot to offer the file, once a search has its turn

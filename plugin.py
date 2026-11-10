@@ -59,6 +59,7 @@ class EbooksPlugin:
     def configure(self, config: Config):
         self.channel = config.irc.channel
         self.offer_timeout = config.search.offer_timeout
+        self.show_private_messages = config.irc.show_private_messages
         self.downloads = Downloads(config.downloads)
 
     def connection_lost(self):
@@ -106,7 +107,8 @@ class EbooksPlugin:
         # notices) verbatim. Channel chatter is skipped — it would drown the log.
         if target and target[0] in "#&+!":
             return
-        log.info("%s from %s to %s: %r", command, mask or "server", target, text)
+        if self.show_private_messages:
+            log.info("%s from %s to %s: %r", command, mask or "server", target, text)
         # Pass on what users (not the server) tell us, except CTCP like DCC offers
         nick = getattr(mask, "nick", None)
         if nick and text and not text.startswith("\x01"):
