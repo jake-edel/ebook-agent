@@ -241,4 +241,6 @@ def test_default_identity_doesnt_mention_irc3(dl):
 
     asyncio.run(go())
     [user] = [line for line in server.lines if line.startswith("USER")]
-    assert user == "USER ebooks 0 * :ebooks"
+    defaults = IrcConfig()
+    assert user == f"USER {defaults.username} 0 * :{defaults.realname}"
+    assert "irc3" not in user

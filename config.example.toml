@@ -12,12 +12,11 @@
 host = "irc.irchighway.net"
 # Must be a TLS port: the connection always uses TLS (encrypt-only, see README)
 port = 6697
-nick: str = "anjay"
-# What a /whois on us shows, besides the nick: the "user" part of
-# nick!user@host, and the free-text real name. Left to irc3, these would
-# announce us as "Irc bot based on irc3"
-username: str = "anjay"
-realname: str = "andrew_jacobs"
+nick = "anjay"
+# What a /whois on you shows besides the nick: the "user" in nick!user@host
+# (1-10 characters, no spaces) and a free-text real name
+username = "anjay"
+realname = "andrew_jacobs"
 channel = "#ebooks"
 # Seconds to wait for the connection and channel join at startup
 connect_timeout = 30

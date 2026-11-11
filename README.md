@@ -194,7 +194,7 @@ Both folders sit alongside the script by default.
 
 ## Notes
 
-- The default nick is `ebooks_cli`. Change it with `nick` in `config.toml`. A `/whois` on you also shows a username and real name, both `ebooks` by default (`username` and `realname`). Left to irc3, those would announce you as an irc3 bot.
+- Your nick, and the username and real name a `/whois` on you shows, are `nick`, `username` and `realname` in `config.toml` (defaults in `config.example.toml`). Left to irc3, the last two would announce you as an irc3 bot.
 - Timeouts (all configurable):
   - 30 seconds to connect to IRC.
   - 60 seconds for a bot to offer the file.
