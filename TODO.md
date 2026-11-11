@@ -4,12 +4,12 @@ Outstanding work, roughly in priority order. The backend is done: what it offers
 
 ## Next: the TUI
 
-The interactive, Neovim-inspired frontend. Design and phases are in [`docs/tui-plan.md`](docs/tui-plan.md), starting with phase 1.
+The interactive, Neovim-inspired frontend, built in stages: see [`docs/tui-plan.md`](docs/tui-plan.md). Stage 1 (browsing past searches) is done; next is stage 2, connecting it to the agent.
 
 ## Robustness / polish
 
 - [ ] **Pin dependencies**
-  - **Problem:** `requirements.txt` (`irc3`) and `requirements-dev.txt` (`pytest`) don't specify versions.
+  - **Problem:** `irc3` (`requirements.txt`) and `pytest` (`requirements-dev.txt`) don't specify versions. `textual` is pinned.
   - **Fix:** pin known-good versions (`irc3==1.1.12` at the time of writing), or add a lock file.
 
 - [ ] **irc3 will break on Python 3.16**

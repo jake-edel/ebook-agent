@@ -1,1 +1,3 @@
 irc3
+# The TUI. Pinned: it's young and changes quickly
+textual==8.2.8

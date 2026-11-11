@@ -32,6 +32,8 @@ Observations (from the sample: 996 Bsk, 2 artemis_serv, 2 Ashurbanipal; 856 epub
 
 ## Layout
 
+An early sketch, not a spec: the stages below decide what actually gets built, by using each one.
+
 ```
 ┌ SEARCHES ───────────────┬ results: warhammer ── 1000 matches · 14 lists ─────────────┐
 │ ▸ warhammer      1000   │  BOT    TITLE                                     TYPE  SIZE│
@@ -60,6 +62,8 @@ The sidebar on the left works like netrw/neo-tree. The main pane shows the curre
 
 ### Modes and keys
 
+Also a sketch. For now there's no mode system: whichever pane has focus decides what keys do, and a text box is effectively insert mode. Keys are added only as features need them (see *Stages*).
+
 - **Normal** (the default)
   - `j`/`k` or the arrow keys: move up and down
   - `Enter`: act on the selected row
@@ -79,7 +83,7 @@ All bindings live in **one keymap table**, so they're easy to change or later lo
 
 ## Architecture
 
-### Framework: Textual (recommended)
+### Framework: Textual
 
 [Textual](https://textual.textualize.io/):
 
@@ -116,16 +120,22 @@ class AgentService(Protocol):
 
 Today's headless mode (logs to the terminal, input over the socket) stays available, for example as `ebooks_agent.py --headless`, with the TUI as the default.
 
-## Phases
+## Stages
 
-| Phase | Scope | Testable without the network? |
+Built in thin slices, each one usable on its own. Using each stage decides the next, so later stages are rough on purpose. The TUI runs from `ebooks_tui.py` until it's ready to be the default.
+
+| Stage | Scope | Status |
 |---|---|---|
-| 0 | Backend: the core interface, done (see [`core-interface.md`](core-interface.md)) | ✅ unit tests |
-| 1 | TUI skeleton: layout, status line, Searches sidebar read from disk, read-only Results buffer, Log buffer fed by a logging handler, `j`/`k`/`Enter`/`q` | ✅ Textual Pilot |
-| 2 | Search prompt connected to `search()`; the new search appears in the sidebar and opens automatically | ✅ fake `AgentService` |
-| 3 | Enter on a result sends `request()`; Transfers buffer with progress; Downloads buffer | ✅ fake service, plus one live check |
-| 4 | Filter and sort, `:` commands, help buffer, offline bots greyed out, bot notices in the status line | ✅ |
-| 5 (optional) | Daemon and client split: the rest of the interface over the Unix socket | ✅ |
+| 1 | Browse past searches from disk: searches list (newest first), results table, `j`/`k`, `Enter`/`l` in, `h`/`Esc` back, `q` quit. No IRC | done |
+| 2 | Go live: the TUI starts the agent and the socket, the status bar shows the connection, `Enter` on a result requests it, and its progress shows somewhere simple | |
+| 3 | Search from the TUI: `s` opens a one-line input; the new search appears at the top and opens when its results arrive | |
+| 4 | Filter results: `/` narrows the table as you type, `Esc` clears | |
+| 5 | See what's happening: transfers (with cancel), downloads, the log. Where they live is decided by stages 2–4 | |
+| 6 | Polish from use: offline bots greyed out (`members()`), sorting, `?` help, `gg`/`G`, the TUI as the default with `--headless` | |
+
+Deferred until something needs them: `:` commands, a mode system, several buffers or tabs, keymaps from config, the daemon split.
+
+Testing: each stage is tested headless with Textual's `run_test()` (`tests/test_tui.py`), against a fake `AgentService` from stage 2 on, plus one live check.
 
 ## Open questions
 

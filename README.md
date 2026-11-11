@@ -5,7 +5,7 @@ A Python agent for IRCHighway's `#ebooks` channel. It sends `@search` queries an
 ## Requirements
 
 - Python 3.11+
-- `irc3`
+- `irc3`, and `textual` for the TUI
 
 ## Setup
 
@@ -76,6 +76,14 @@ INFO Saved: /home/jake/ebooks-cli/searches/20261108-143005 dune frank herbert.tx
 ```
 
 Press `Ctrl+C`, or send `SIGTERM`, to disconnect and exit.
+
+### The TUI (in progress)
+
+```bash
+python ebooks_tui.py
+```
+
+For now it browses past searches in `searches/`: move with `j`/`k` (or the arrows), `Enter` or `l` to go into a search's results, `h` or `Esc` to come back, `q` to quit. It doesn't connect to IRC yet. See [`docs/tui-plan.md`](docs/tui-plan.md) for what's next.
 
 ### The socket
 
@@ -157,6 +165,8 @@ The tests never touch the network or your real `downloads/` and `searches/` fold
 
 ```
 ebooks_agent.py   — entry point: flags, startup, runs until Ctrl+C
+ebooks_tui.py     — entry point for the TUI (in progress)
+tui/              — the TUI: app.py (interface and keys), library.py (reads searches from disk)
 config.py         — loads and validates settings (defaults, overridden by config.toml)
 config.example.toml — documented template for config.toml
 core.py           — the core interface: requests, events and status, shared by every frontend
