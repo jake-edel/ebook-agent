@@ -4,7 +4,7 @@ A multi-mode, keyboard-driven terminal app for searching `#ebooks`, browsing pas
 
 ## Background
 
-The project started with an interactive prompt. The Unix socket came next, so other processes could drive the agent, and it later replaced the prompt entirely: the agent now runs headless in the foreground, logging as it goes. The TUI is one more frontend over the same agent: you search with `@search <query>`, look back through past searches, open one to see its results, and press Enter on a result to request it.
+Today the agent runs headless in the foreground, logging as it goes, and takes commands over a Unix socket. The TUI is one more frontend over the same agent: you search with `@search <query>`, look back through past searches, open one to see its results, and press Enter on a result to request it.
 
 ## The data
 
@@ -27,7 +27,7 @@ Observations (from the sample: 996 Bsk, 2 artemis_serv, 2 Ashurbanipal; 856 epub
 - **The request is easy to find.** Everything before ` ::INFO::` is the exact line to send back, and the first word (`!Bsk`) is the bot that will reply. This holds for 998 of the 1,000 lines.
 - **Size and file type can be parsed** (`2.19MB`, `680.86KB`, `44.7 MB`, plus the file extension), so results can be shown in columns, sorted and filtered.
 - **One bot doesn't follow the format.** Ashurbanipal lines have no `::INFO::` marker (`(PDF) 44.7 MB - [tags]`). **Decision:** only the standard format is parsed; other lines aren't shown as results, and are kept verbatim in `SearchResults.unparsed`. The original file stays on disk for auditing. Dropping one provider is better than maintaining a guessed special case.
-- **Some bots may be offline.** The header warns that a request to a bot not in the channel does nothing. The agent already tracks channel membership (irc3 userlist), so the TUI can grey out those results.
+- **Some bots may be offline.** The header warns that a request to a bot not in the channel does nothing. The agent's `members()` says who's in the channel, so the TUI can grey out those results.
 - Files use CRLF line endings and are ASCII. The search bot caps results at 1,000.
 
 ## Layout
@@ -75,7 +75,7 @@ The sidebar on the left works like netrw/neo-tree. The main pane shows the curre
 - **Command**
   - `:` for `:search`, `:sort size|bot|name`, `:filter epub`, `:q`, `:help`
 
-All bindings live in **one keymap table**, so they're easy to change or later load from config. *(Open question 3.)*
+All bindings live in **one keymap table**, so they're easy to change or later load from config. *(Open question 2.)*
 
 ## Architecture
 
@@ -112,30 +112,23 @@ class AgentService(Protocol):
 ```
 
 - **Phase 1:** `AgentService` is the agent object itself, running in the TUI's process. The Unix socket keeps running there too, as it does in the headless agent today.
-- **Later (optional):** run the agent as a daemon and have the TUI connect to it over the Unix socket as a client. Then one IRC connection serves the TUI and scripts. The socket already speaks JSON lines and streams each request's events (see `unix_socket.py`). A client needs more than that, though: a subscription to every event, and `requests()` and `cancel()`. So it's only worth building once it's actually needed. *(Open question 2.)*
+- **Later (optional):** run the agent as a daemon and have the TUI connect to it over the Unix socket as a client, so one IRC connection serves the TUI and scripts. That needs more of the interface over the socket (see *Transports* in `core-interface.md`), so it's only worth building once it's actually needed. *(Open question 1.)*
 
 Today's headless mode (logs to the terminal, input over the socket) stays available, for example as `ebooks_agent.py --headless`, with the TUI as the default.
-
-## Backend prerequisites (phase 0)
-
-These come before any UI work, and are done. They're tracked in [`TODO.md`](../TODO.md#phase-0--tui-backend-prerequisites), and the interface they built is specified in [`core-interface.md`](core-interface.md): the results parser, separate `search()` and `request()`, the event stream, progress reporting, per-bot request tracking, all output through logging, and the Unix socket rebuilt on the core.
-
-Two plans from earlier drafts were dropped along the way: a `QUEUED` state with no offer timeout (bot queues have only lasted seconds), and restarting the offer timeout whenever a bot speaks.
 
 ## Phases
 
 | Phase | Scope | Testable without the network? |
 |---|---|---|
-| 0 | Backend prerequisites above | ✅ unit tests |
-| 1 | TUI skeleton: layout, status line, Searches sidebar read from disk, read-only Results buffer, `j`/`k`/`Enter`/`q` | ✅ Textual Pilot |
+| 0 | Backend: the core interface, done (see [`core-interface.md`](core-interface.md)) | ✅ unit tests |
+| 1 | TUI skeleton: layout, status line, Searches sidebar read from disk, read-only Results buffer, Log buffer fed by a logging handler, `j`/`k`/`Enter`/`q` | ✅ Textual Pilot |
 | 2 | Search prompt connected to `search()`; the new search appears in the sidebar and opens automatically | ✅ fake `AgentService` |
 | 3 | Enter on a result sends `request()`; Transfers buffer with progress; Downloads buffer | ✅ fake service, plus one live check |
 | 4 | Filter and sort, `:` commands, help buffer, offline bots greyed out, bot notices in the status line | ✅ |
-| 5 (optional) | Daemon and client split over the Unix socket with a JSON protocol | ✅ |
+| 5 (optional) | Daemon and client split: the rest of the interface over the Unix socket | ✅ |
 
 ## Open questions
 
-1. ~~**Ashurbanipal request format.**~~ Decided: non-standard lines are skipped (see *The data*).
-2. **In-process or daemon from the start?** The recommendation is in-process first. Are there other scripts that need the same IRC connection at the same time as the TUI?
-3. **Key bindings.** Strict Vim (hjkl, `:` commands) with arrow keys also working, or closer to neo-tree's defaults?
-4. **Search history.** Keep every search forever or cap it (for example at the last 50)? Should re-running a query replace its file or add a new entry?
+1. **In-process or daemon from the start?** The recommendation is in-process first. Are there other scripts that need the same IRC connection at the same time as the TUI?
+2. **Key bindings.** Strict Vim (hjkl, `:` commands) with arrow keys also working, or closer to neo-tree's defaults?
+3. **Search history.** Every search is kept, and a repeat gets a new file. Should the sidebar cap what it shows (for example the last 50), or offer a way to delete old ones?

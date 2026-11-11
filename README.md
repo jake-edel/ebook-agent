@@ -1,11 +1,11 @@
 # ebooks-agent
 
 A Python agent for IRCHighway's `#ebooks` channel. It sends `@search` queries and saves the results file, then requests the books you pick from it (`!Bot …` lines), receiving each over DCC and saving it to disk. Other programs drive it over a Unix socket.
+
 ## Requirements
 
 - Python 3.11+
 - `irc3`
-
 
 ## Setup
 
@@ -169,6 +169,7 @@ downloads/        — where books are saved
 searches/         — where search results files are saved
 tests/            — pytest suite
 TODO.md           — outstanding work and accepted risks
+docs/core-interface.md — what the agent offers frontends, and why
 docs/tui-plan.md  — design and phases for the planned TUI
 ```
 

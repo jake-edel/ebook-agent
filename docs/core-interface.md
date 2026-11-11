@@ -2,22 +2,15 @@
 
 The contract between the IRC/DCC core and anything that drives it. The types live in [`core.py`](../core.py); `EbooksAgent` in [`agent.py`](../agent.py) implements it.
 
-## Why this exists
+## Why this shape
 
-The agent started as `search(term) -> Path`: send a line, wait, return a file. That's how a function call works, not how IRC works:
+IRC isn't a function call, so the interface isn't `search(term) -> Path`:
 
 - **It's two steps.** `@search` returns a results file, and then `!Bot …` returns the book.
 - **Replies arrive when the bot gets to them.** Bots may answer with notices ("searching…", "file not found") before any offer.
 - **Several requests can be in flight**, one per bot or more.
 
-The global search lock and the fixed 60s timeout were symptoms of that mismatch.
-
-The interface is also **frontend-agnostic on purpose**. We haven't decided between:
-
-- **A**, a TUI that runs the agent in its own process;
-- **B**, a long-running daemon that a TUI, scripts and small CLI commands connect to over a socket.
-
-The core must work unchanged for both. Choosing B later should mean writing a transport, not redesigning the core.
+It's also **frontend-agnostic on purpose**. The TUI runs the agent in its own process for now, but a long-running daemon that a TUI, scripts and small CLI commands all connect to is still an option. The core must work unchanged for both, so choosing the daemon later means writing a transport, not redesigning the core.
 
 ## Shape
 
@@ -75,7 +68,7 @@ PENDING ──▶ WAITING ──▶ TRANSFERRING ──▶ DONE
 
 After `stop()`, each stream delivers what's queued (the cancelled requests, then `StatusChanged` to `STOPPED`) and ends, so a frontend's listener tasks finish by themselves.
 
-This deliberately replaces the plan's longer list (`OfferAccepted`, `Progress`, `Completed`, `Failed`, …) with one `RequestUpdated` that carries the whole snapshot. Frontends re-render the row instead of reconstructing state from deltas, and a client that missed events can call `requests()` to catch up.
+There's one `RequestUpdated` carrying the whole snapshot, rather than an event per step (offer accepted, progress, completed…). Frontends re-render the row instead of reconstructing state from deltas, and a client that missed events can call `requests()` to catch up.
 
 ### Rules that keep it agnostic
 
@@ -84,9 +77,11 @@ This deliberately replaces the plan's longer list (`OfferAccepted`, `Progress`, 
 - Commands never block on IRC. Only `start`, `wait_ready`, `stop` and `wait` are async.
 - Logging stays separate. Log lines are for humans; events are for programs.
 
-## Decisions
+### Transports
 
-Settled on 2026-11-09.
+`unix_socket.py` is the first: one JSON-lines command per connection, answered with that request's events (see the README). A daemon client would need more of the interface over it: a subscription to every event, `requests()` and `cancel()`.
+
+## Decisions
 
 1. **Matching offers to requests.**
    - Book requests name their bot. If several requests to the same bot are in flight, offers are matched in the order the requests were sent, which is how bots serve them.
@@ -99,22 +94,8 @@ Settled on 2026-11-09.
    - `PENDING` requests wait for the reconnect.
    - `WAITING` requests fail with a clear error, since the bot's queue entry is gone when our nick drops. They aren't resent automatically, which could double-request from a bot that did keep the spot.
    - Transfers in progress are unaffected, because DCC is a separate connection.
-
-## Other decisions
-
-1. **History.**
+4. **History.**
    - `requests()` covers this session only.
    - Past searches already persist as files in `searches/`, and books in `downloads/`.
    - Persisting requests themselves, so queued requests survive a restart, only matters in a daemon. Left out for now.
-2. **Slow subscribers.** Each `events()` stream has its own unbounded queue. Events are small and progress is rate-limited, so a bounded queue with a drop policy isn't worth it yet.
-
-## How Phase 0 maps onto it
-
-| TODO item | Became |
-|---|---|
-| 0.2 Separate `search()` and `request()` | the two commands, with `RequestKind`; results files saved to `searches/` |
-| 0.3 Implement the core interface | `EbooksAgent`: `events()`, `status()`, `requests()`, `cancel()`, `wait()` and the three event types |
-| 0.4 Progress reporting | `Downloads.receive(on_progress=…)` feeding `RequestUpdated` |
-| 0.5 Per-bot tracking | the plugin's list of waiting requests, with offer matching per decision 1 |
-| 0.6 Logging | unchanged, and separate from events |
-| 0.7 Rebuild the Unix socket | a JSON-lines protocol streaming each request's events (`to_dict`), the first transport over the core |
+5. **Slow subscribers.** Each `events()` stream has its own unbounded queue. Events are small and progress is rate-limited, so a bounded queue with a drop policy isn't worth it yet.
