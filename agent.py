@@ -63,6 +63,13 @@ class _IrcBot(irc3.IrcBot):
     stopped = False
     # Attempts since we were last in the channel (the first one included)
     attempts = 0
+    # irc3 passes this to logging.config.dictConfig. Its own default gives
+    # the "irc3" loggers a stderr handler that doesn't propagate, which
+    # prints over the TUI and keeps them out of the log file, and, not being
+    # incremental, closes every handler already set up. An empty incremental
+    # config leaves logging alone: irc3's records go to the root logger like
+    # ours.
+    logging_config = {"version": 1, "incremental": True}
 
     def create_connection(self):
         if self.stopped:

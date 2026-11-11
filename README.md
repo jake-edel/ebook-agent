@@ -43,7 +43,7 @@ Everything works out of the box with the defaults. To change something, copy the
 cp config.example.toml config.toml
 ```
 
-`config.toml` is gitignored, so your local settings stay out of commits. `config.example.toml` lists every setting with its default and what it does: IRC host, nick and channel, the timeouts, the size limits, and the downloads folder.
+`config.toml` is gitignored, so your local settings stay out of commits. `config.example.toml` lists every setting with its default and what it does: IRC host, nick and channel, the timeouts, the size limits, the downloads folder, and the log file.
 
 Any setting the file leaves out keeps its built-in default. The agent reads `config.toml` next to `ebooks_agent.py`, or another file if you pass one:
 
@@ -51,7 +51,7 @@ Any setting the file leaves out keeps its built-in default. The agent reads `con
 python ebooks_agent.py --config ~/ebooks.toml
 ```
 
-A relative `downloads.dir` in the config file is relative to that file.
+Relative paths in the config file (`downloads.dir`, `log.file`, ...) are relative to that file.
 
 Mistakes are caught at startup with a clear message, and the agent exits without connecting. That covers unknown settings (typos like `nik`), wrong types, and out-of-range values. TLS can't be turned off.
 
@@ -76,6 +76,19 @@ INFO Saved: /home/jake/ebooks-cli/searches/20261108-143005 dune frank herbert.tx
 ```
 
 Press `Ctrl+C`, or send `SIGTERM`, to disconnect and exit.
+
+### The log file
+
+Both the agent and the TUI also log to `agent.log` (set by `log.file` in the config), so there's a record to look back on. The file is appended to across runs: each run starts with a `---- session start` line and ends with `---- session end`. A run with no end line crashed or was killed. Every line has a timestamp:
+
+```
+2026-11-11 14:02:10.950 INFO  ---- session start: ebooks_agent pid 48211, config /home/jake/ebooks-cli/config.toml, UTC+0100
+2026-11-11 14:03:01.010 INFO  Message sent: @search dune frank herbert
+...
+2026-11-11 14:30:00.010 INFO  ---- session end
+```
+
+At 5 MiB the file is rotated: the old one becomes `agent.log.1`, and the 3 most recent old files are kept. The size and count can be changed in the config. The files are readable by you only, since they hold your searches and the books you asked for. See [`docs/logging-plan.md`](docs/logging-plan.md) for where this is going.
 
 ### The TUI (in progress)
 
@@ -171,6 +184,7 @@ ebooks_tui.py     — entry point for the TUI (in progress)
 tui/              — the TUI: app.py (interface and keys), library.py (reads searches from disk)
 config.py         — loads and validates settings (defaults, overridden by config.toml)
 config.example.toml — documented template for config.toml
+logfile.py        — the log file: format, session lines, rotation
 core.py           — the core interface: requests, events and status, shared by every frontend
 agent.py          — EbooksAgent class, owns the IRC connection and implements the core interface
 plugin.py         — irc3 plugin, handles IRC events and DCC offers
@@ -183,6 +197,7 @@ tests/            — pytest suite
 TODO.md           — outstanding work and accepted risks
 docs/core-interface.md — what the agent offers frontends, and why
 docs/tui-plan.md  — design and phases for the planned TUI
+docs/logging-plan.md — what the log file records, and the stages to get there
 ```
 
 ## Output

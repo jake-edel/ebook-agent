@@ -10,7 +10,8 @@ import sys
 from pathlib import Path
 
 from agent import EbooksAgent
-from config import ConfigError, load_config
+from config import ConfigError, config_file, load_config
+from logfile import LogFile, LogFileError
 from tui.app import EbooksApp
 from unix_socket import SocketUnavailableError, claim_socket_path
 
@@ -22,8 +23,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     # The TUI owns the terminal: log lines printed to it would garble the
-    # screen. Until there's a log view, drop them (a handler on the root
-    # logger also stops Python printing warnings as a last resort).
+    # screen. They go to the log file only; until that's open, they're
+    # dropped (a handler on the root logger also stops Python printing
+    # warnings as a last resort).
     logging.getLogger().addHandler(logging.NullHandler())
 
     try:
@@ -37,7 +39,14 @@ def main(argv=None):
     except SocketUnavailableError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
-    EbooksApp(EbooksAgent(config), config.downloads.searches_dir, socket_path).run()
+    try:
+        # After claiming the socket: only one process may write the log
+        log_file = LogFile(config.log, "ebooks_tui", config_file(args.config))
+    except LogFileError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    with log_file:
+        EbooksApp(EbooksAgent(config), config.downloads.searches_dir, socket_path).run()
 
 
 if __name__ == "__main__":

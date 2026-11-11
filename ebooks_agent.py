@@ -14,7 +14,8 @@ import sys
 from pathlib import Path
 
 from agent import EbooksAgent
-from config import Config, ConfigError, load_config
+from config import Config, ConfigError, config_file, load_config
+from logfile import LogFile, LogFileError
 from unix_socket import (
     SocketUnavailableError,
     UnsafeSocketPathError,
@@ -58,10 +59,16 @@ def _parse_args(argv=None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-async def _main(config: Config):
+async def _main(config: Config, config_path: Path | None = None):
     # Before going near IRC: if another agent is running, connecting a second
-    # one (as "ebooks_cli_") would only be undone a moment later
+    # one (as "ebooks_cli_") would only be undone a moment later. Also before
+    # the log file, which only one process may write.
     path = claim_socket_path()
+    with LogFile(config.log, "ebooks_agent", config_path):
+        await _run(config, path)
+
+
+async def _run(config: Config, path: Path):
     agent = EbooksAgent(config)
     await agent.start()
     loop = asyncio.get_running_loop()
@@ -106,10 +113,10 @@ def main(argv=None):
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(2)
     try:
-        asyncio.run(_main(config))
+        asyncio.run(_main(config, config_file(args.config)))
     except KeyboardInterrupt:
         pass
-    except (TimeoutError, SocketUnavailableError) as e:
+    except (TimeoutError, SocketUnavailableError, LogFileError) as e:
         # Startup failures — print the reason, not a traceback
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)

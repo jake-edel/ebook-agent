@@ -6,6 +6,10 @@ Outstanding work, roughly in priority order. The backend is done: what it offers
 
 The interactive, Neovim-inspired frontend, built in stages: see [`docs/tui-plan.md`](docs/tui-plan.md). Stages 1 (browsing past searches) and 2 (requesting books) are done; next is stage 3, searching from the TUI.
 
+## Next: an audit log file
+
+Log what the agent sent, what was sent to it, and every request's state changes to a rotating file, in both the CLI and the TUI. See [`docs/logging-plan.md`](docs/logging-plan.md).
+
 ## Robustness / polish
 
 - [ ] **Pin dependencies**

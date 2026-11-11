@@ -74,9 +74,24 @@ class DownloadsConfig:
 
 
 @dataclass(frozen=True)
+class LogConfig:
+    # The audit log: appended to across runs (see docs/logging-plan.md)
+    file: Path = PROJECT_DIR / "agent.log"
+    # Rotate when the file reaches this size, keeping this many old files
+    # (agent.log.1 is the newest)
+    max_size_mib: int = 5
+    backups: int = 3
+
+    @property
+    def max_size_bytes(self) -> int:
+        return self.max_size_mib * MIB
+
+
+@dataclass(frozen=True)
 class Config:
     irc: IrcConfig = field(default_factory=IrcConfig)
     downloads: DownloadsConfig = field(default_factory=DownloadsConfig)
+    log: LogConfig = field(default_factory=LogConfig)
 
 
 # --- loading ----------------------------------------------------------------
@@ -168,6 +183,13 @@ def _load_file(cfg: Config, path: Path) -> Config:
     return cfg
 
 
+def config_file(path: Path | None = None) -> Path | None:
+    """The file load_config(path) reads: `path`, else config.toml next to
+    this file. None if it doesn't exist (only the defaults apply)."""
+    file_path = (DEFAULT_CONFIG_PATH if path is None else path.expanduser()).resolve()
+    return file_path if file_path.is_file() else None
+
+
 def load_config(path: Path | None = None) -> Config:
     """Build the effective configuration: the defaults, overridden by a TOML file.
 
@@ -176,13 +198,13 @@ def load_config(path: Path | None = None) -> Config:
     Raises ConfigError with a readable message on any problem.
     """
     cfg = Config()
-    file_path = DEFAULT_CONFIG_PATH if path is None else path.expanduser()
-    if file_path.is_file():
+    file_path = config_file(path)
+    if file_path is not None:
         cfg = _load_file(cfg, file_path)
         log.info("Loaded config from %s", file_path)
     elif path is not None:
         # A file you asked for by name must exist; the default one is optional
-        raise ConfigError(f"Config file not found: {file_path}")
+        raise ConfigError(f"Config file not found: {path.expanduser()}")
 
     _validate(cfg)
     return cfg
@@ -202,11 +224,15 @@ _CHANNEL_RE = re.compile(r"^[#&][^\s,\x00-\x1f]{1,49}$")
 _MAX_SIZE_MIB_LIMIT = 4095
 # More than this at once from one bot is just greedy
 _MAX_REQUESTS_PER_BOT = 10
+# Log rotation bounds: a single file you can still open in an editor, and a
+# cap on how many old ones pile up
+_MAX_LOG_SIZE_MIB = 1024
+_MAX_LOG_BACKUPS = 20
 
 
 def _validate(cfg: Config):
     errors = []
-    irc, dl = cfg.irc, cfg.downloads
+    irc, dl, lg = cfg.irc, cfg.downloads, cfg.log
 
     if not irc.host or any(c.isspace() for c in irc.host):
         errors.append(f"irc.host: invalid hostname {irc.host!r}")
@@ -251,6 +277,13 @@ def _validate(cfg: Config):
             errors.append(f"{name}: {path} exists and is not a directory")
     if dl.dir == dl.searches_dir:
         errors.append(f"downloads.searches_dir: must differ from downloads.dir ({dl.dir})")
+
+    if lg.file.is_dir():
+        errors.append(f"log.file: {lg.file} is a directory")
+    if not 1 <= lg.max_size_mib <= _MAX_LOG_SIZE_MIB:
+        errors.append(f"log.max_size_mib: must be 1–{_MAX_LOG_SIZE_MIB}, got {lg.max_size_mib}")
+    if not 1 <= lg.backups <= _MAX_LOG_BACKUPS:
+        errors.append(f"log.backups: must be 1–{_MAX_LOG_BACKUPS}, got {lg.backups}")
 
     if errors:
         raise ConfigError("Invalid configuration:\n  " + "\n  ".join(errors))

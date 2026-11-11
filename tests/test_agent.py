@@ -19,6 +19,28 @@ def test_connects_over_tls():
     assert ctx.minimum_version.name in ("TLSv1_2", "TLSv1_3")
 
 
+def test_irc3_logs_go_to_our_handlers(caplog, tmp_path):
+    # irc3's own logging config would print its records to stderr (over the
+    # TUI), keep them from the log file, and close the handlers already set up
+    import logging
+
+    from config import LogConfig
+    from logfile import LogFile
+
+    cfg = LogConfig(file=tmp_path / "agent.log")
+    with LogFile(cfg, "test") as log_file:
+        bot = asyncio.run(_build())
+        assert not log_file._handler.stream.closed
+        bot.log.error("Connect call failed")
+    assert not logging.getLogger("irc3").handlers
+    assert "Connect call failed" in caplog.text
+    assert "ERROR Connect call failed" in cfg.file.read_text()
+
+
+async def _build():
+    return EbooksAgent()._build_bot()
+
+
 # --- reconnecting -------------------------------------------------------------
 
 def test_reconnects_wait_longer_each_time(monkeypatch):

@@ -103,6 +103,10 @@ def test_invalid_toml(tmp_path):
     ('[downloads]\nmax_requests_per_bot = 0\n', "max_requests_per_bot: must be 1–10"),
     ('[downloads]\nmax_requests_per_bot = 11\n', "max_requests_per_bot: must be 1–10"),
     ('[downloads]\ndir = ""\n', "expected a path"),
+    ('[log]\nfile = ""\n', "expected a path"),
+    ('[log]\nmax_size_mib = 0\n', "log.max_size_mib: must be 1–1024"),
+    ('[log]\nbackups = 0\n', "log.backups: must be 1–20"),
+    ('[log]\nbackups = 21\n', "log.backups: must be 1–20"),
 ])
 def test_bad_values_in_file(tmp_path, text, match):
     with pytest.raises(ConfigError, match=match):
@@ -125,6 +129,26 @@ def test_downloads_dir_that_is_a_file(tmp_path):
     (tmp_path / "f").write_text("")
     with pytest.raises(ConfigError, match="not a directory"):
         load_config(write(tmp_path, '[downloads]\ndir = "f"\n'))
+
+
+def test_log_file_that_is_a_directory(tmp_path):
+    (tmp_path / "logs").mkdir()
+    with pytest.raises(ConfigError, match="log.file: .* is a directory"):
+        load_config(write(tmp_path, '[log]\nfile = "logs"\n'))
+
+
+def test_log_settings_from_file(tmp_path):
+    cfg = load_config(write(tmp_path, '[log]\nfile = "~/x.log"\nmax_size_mib = 2\nbackups = 5\n'))
+    assert cfg.log.file == (Path.home() / "x.log").resolve()
+    assert (cfg.log.max_size_bytes, cfg.log.backups) == (2 * 1024 * 1024, 5)
+
+
+def test_config_file_is_the_one_read(tmp_path, monkeypatch):
+    assert config.config_file() is None  # no config.toml: defaults only
+    path = write(tmp_path, "")
+    assert config.config_file(path) == path.resolve()
+    monkeypatch.setattr(config, "DEFAULT_CONFIG_PATH", path)
+    assert config.config_file() == path.resolve()
 
 
 # --- applying the config ----------------------------------------------------

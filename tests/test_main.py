@@ -1,6 +1,7 @@
 """The foreground process: serves the socket until stopped, fails fast without it."""
 
 import asyncio
+import logging
 import os
 import subprocess
 import sys
@@ -9,6 +10,7 @@ from pathlib import Path
 import pytest
 
 import ebooks_agent
+from config import Config, LogConfig
 import unix_socket as us
 
 from test_socket import FakeAgent, ask, runtime_dir  # noqa: F401
@@ -108,3 +110,30 @@ def test_refuses_to_start_beside_a_running_agent(runtime_dir, monkeypatch):
 
     asyncio.run(go())
     assert connected == []
+
+
+def test_session_is_logged_to_the_file(runtime_dir, monkeypatch, tmp_path):
+    # Startup fails (no join in time), but the log file still gets the whole
+    # session, with the reason it ended
+    class SlowAgent:
+        def __init__(self, config):
+            pass
+
+        async def start(self):
+            logging.getLogger("agent").info("Connected to irc.example.net, joining #ebooks")
+
+        async def wait_ready(self, timeout):
+            raise TimeoutError("Didn't join #ebooks within 30s")
+
+        async def stop(self):
+            pass
+
+    monkeypatch.setattr(ebooks_agent, "EbooksAgent", SlowAgent)
+    monkeypatch.setattr(us, "socket_path", lambda: runtime_dir / "ebooks.sock")
+    config = Config(log=LogConfig(file=tmp_path / "agent.log"))
+    with pytest.raises(TimeoutError):
+        asyncio.run(ebooks_agent._main(config, tmp_path / "config.toml"))
+    start, connected, end = (tmp_path / "agent.log").read_text().splitlines()
+    assert f"session start: ebooks_agent pid {os.getpid()}, config {tmp_path / 'config.toml'}" in start
+    assert connected.endswith("INFO  Connected to irc.example.net, joining #ebooks")
+    assert end.endswith("session end: TimeoutError: Didn't join #ebooks within 30s")

@@ -43,3 +43,13 @@ max_requests_per_bot = 2
 connect_timeout = 15
 # Give up on a transfer after this many seconds without data
 stall_timeout = 30
+
+[log]
+# The log file: what the agent sent to IRC, what was sent to it, and how each
+# request went. Appended to across runs. Relative paths are relative to this
+# file; ~ works. Created readable by you only.
+file = "agent.log"
+# Start a new file when this one reaches this size (1-1024)...
+max_size_mib = 5
+# ...keeping this many old ones as agent.log.1 (newest) to .3 (1-20)
+backups = 3
