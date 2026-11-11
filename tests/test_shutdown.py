@@ -151,6 +151,7 @@ def test_start_returns_at_once_and_requests_wait_for_the_join(dl):
     assert sent == ["PRIVMSG #ebooks :@search dune"]
     states = [e.status.state for e in seen if isinstance(e, StatusChanged)]
     assert states == [ConnectionState.CONNECTING, ConnectionState.READY, ConnectionState.STOPPED]
+    assert agent._bot.attempts == 0  # joined: a later drop starts the reconnect delays over
     assert agent.requests()[0].state is RequestState.CANCELLED
 
 

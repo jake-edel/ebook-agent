@@ -52,7 +52,7 @@ PENDING ──▶ WAITING ──▶ TRANSFERRING ──▶ DONE
   (any non-finished state) ──▶ FAILED / CANCELLED
 ```
 
-- `PENDING`: accepted, not sent yet (still connecting, or another search is in flight).
+- `PENDING`: accepted, not sent yet (still connecting, another search is in flight, or the bot already has `downloads.max_requests_per_bot` of our requests).
 - `WAITING`: sent to the channel, no offer yet.
 - `TRANSFERRING`: offer accepted, bytes arriving. `received` and `size` give progress.
 - `DONE` sets `path`, and `FAILED` sets `error`.

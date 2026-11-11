@@ -100,6 +100,8 @@ def test_invalid_toml(tmp_path):
     ('[downloads]\noffer_timeout = 0\n', "must be greater than 0"),
     ('[downloads]\nmax_size_mib = 5000\n', "max_size_mib: must be 1–4095"),
     ('[downloads]\ndisk_headroom_mib = -1\n', "can't be negative"),
+    ('[downloads]\nmax_requests_per_bot = 0\n', "max_requests_per_bot: must be 1–10"),
+    ('[downloads]\nmax_requests_per_bot = 11\n', "max_requests_per_bot: must be 1–10"),
     ('[downloads]\ndir = ""\n', "expected a path"),
 ])
 def test_bad_values_in_file(tmp_path, text, match):

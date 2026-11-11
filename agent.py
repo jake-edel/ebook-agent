@@ -48,16 +48,46 @@ MEMBERS_INTERVAL = 2.0
 # transfers are plaintext regardless.
 
 
+# Seconds between connection attempts after a drop or a failure, growing so
+# a server that keeps refusing us isn't hammered (that's how IPs get banned).
+# irc3 itself waits 2-3s before each retry; we add the rest. Back to the
+# start once we've joined the channel again.
+RECONNECT_DELAYS = (3, 10, 30, 60, 120, 300)
+_IRC3_RETRY_WAIT = 3
+
+
 class _IrcBot(irc3.IrcBot):
     # Set by EbooksAgent.stop(). irc3 retries a failed or dropped connection
     # with call_later() handles it doesn't keep, so they can't be cancelled:
     # they find this flag instead.
     stopped = False
+    # Attempts since we were last in the channel (the first one included)
+    attempts = 0
 
     def create_connection(self):
         if self.stopped:
             return self.loop
+        if self.attempts:
+            # A retry: irc3 has already waited a little; wait out the rest
+            delay = RECONNECT_DELAYS[min(self.attempts, len(RECONNECT_DELAYS)) - 1]
+            extra = delay - _IRC3_RETRY_WAIT
+            self.attempts += 1
+            if extra > 0:
+                log.warning("Reconnecting to %s in %ds", self.config.host, delay)
+                self.loop.call_later(extra, self._connect_now)
+                return self.loop
+            return self._connect_now()
+        self.attempts += 1
+        return self._connect_now()
+
+    def _connect_now(self):
+        if self.stopped:
+            return self.loop
         return super().create_connection()
+
+    def joined(self):
+        """We're in the channel: the next drop starts the delays over."""
+        self.attempts = 0
 
     def connection_made(self, f):
         if self.stopped:
@@ -185,6 +215,8 @@ class EbooksAgent:
             return  # e.g. the server hanging up after our QUIT
         if state is ConnectionState.READY:
             self._read_tls()
+            if self._bot is not None:
+                self._bot.joined()
         else:
             self._peer = self._fingerprint = None
         self._set_state(state)

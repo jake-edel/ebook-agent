@@ -356,3 +356,88 @@ def test_membership_changes_are_passed_on(line):
         return changes
 
     assert run(go())
+
+
+# --- requests per bot ---------------------------------------------------------
+
+def sent_lines(p):
+    return [line for _, line in p.bot.sent]
+
+
+def test_requests_beyond_a_bots_limit_wait_until_a_file_arrives(dl, monkeypatch):
+    p = make_plugin(dl)
+    p.max_requests_per_bot = 1
+    release = asyncio.Event()
+
+    async def slow_receive(ip, port, size, dest, on_progress=None):
+        await release.wait()  # the transfer is still going
+        dest.write_bytes(b"x")
+        return dest
+
+    monkeypatch.setattr(dl, "receive", slow_receive)
+
+    async def go():
+        a = asyncio.create_task(p.request("!Oatmeal a.epub", "Oatmeal"))
+        b = asyncio.create_task(p.request("!Oatmeal b.epub", "Oatmeal"))
+        await asyncio.sleep(0.01)
+        seen = [sent_lines(p)]
+        offer_from(p, "Oatmeal", "a.epub")
+        await asyncio.sleep(0.01)
+        seen.append(sent_lines(p))  # a's offer is in, but its file isn't
+        release.set()
+        await asyncio.wait_for(a, 1)
+        await asyncio.sleep(0.01)
+        seen.append(sent_lines(p))
+        b.cancel()
+        return seen
+
+    assert run(go()) == [["!Oatmeal a.epub"], ["!Oatmeal a.epub"],
+                         ["!Oatmeal a.epub", "!Oatmeal b.epub"]]
+
+
+def test_the_limit_is_per_bot(dl, received):
+    p = make_plugin(dl)
+    p.max_requests_per_bot = 1
+
+    async def go():
+        tasks = [asyncio.create_task(p.request(line, bot)) for line, bot in (
+            ("!Oatmeal a.epub", "Oatmeal"), ("!OATMEAL b.epub", "OATMEAL"), ("!Bsk c.epub", "Bsk"))]
+        await asyncio.sleep(0.01)
+        for t in tasks:
+            t.cancel()
+        return sent_lines(p)
+
+    # Nicks are case-insensitive: b waits behind a; Bsk isn't held up
+    assert run(go()) == ["!Oatmeal a.epub", "!Bsk c.epub"]
+
+
+def test_the_default_allows_two_per_bot(ebooks_plugin):
+    async def go():
+        tasks = [asyncio.create_task(ebooks_plugin.request(f"!Oatmeal {n}.epub", "Oatmeal"))
+                 for n in "abc"]
+        await asyncio.sleep(0.01)
+        for t in tasks:
+            t.cancel()
+        return sent_lines(ebooks_plugin)
+
+    assert run(go()) == ["!Oatmeal a.epub", "!Oatmeal b.epub"]
+
+
+@pytest.mark.parametrize("end", ["timeout", "cancel"])
+def test_a_finished_request_frees_its_slot(dl, received, end):
+    p = make_plugin(dl)
+    p.max_requests_per_bot = 1
+    p.offer_timeout = 0.05 if end == "timeout" else 10
+
+    async def go():
+        a = asyncio.create_task(p.request("!Oatmeal a.epub", "Oatmeal"))
+        b = asyncio.create_task(p.request("!Oatmeal b.epub", "Oatmeal"))
+        await asyncio.sleep(0.01)
+        if end == "cancel":
+            a.cancel()
+        await asyncio.gather(a, return_exceptions=True)
+        await asyncio.sleep(0.01)
+        b.cancel()
+        return sent_lines(p)
+
+    assert run(go()) == ["!Oatmeal a.epub", "!Oatmeal b.epub"]

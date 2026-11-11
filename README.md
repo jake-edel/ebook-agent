@@ -200,6 +200,10 @@ Both folders sit alongside the script by default.
   - 60 seconds for a bot to offer the file.
   - 15 seconds to connect to the bot for the transfer.
   - A transfer gives up after 30 seconds without data. There's no limit on total download time.
+- **Staying polite on the server:**
+  - A bot gets at most 2 book requests from you at a time (`downloads.max_requests_per_bot`), from sending the line until its file has arrived. More wait their turn, unsent.
+  - Searches go one at a time.
+  - After a dropped or refused connection, retries wait longer each time: about 3 seconds, then 10, 30, 60 and 120, then every 5 minutes, until you're back in the channel.
 - A failed or interrupted download never leaves a partial file behind, and never touches an existing file with the same name.
 - **TLS is encrypt-only.** IRCHighway rotates DNS across several servers, each with its own self-signed certificate, so certificates aren't verified. This keeps your searches private from passive observers (shared Wi-Fi, your ISP) but not from an active man-in-the-middle. Each connection logs the server IP and certificate fingerprint.
 - **DCC file transfers are plaintext** — that's how the DCC protocol works, and it's independent of the IRC connection's TLS.

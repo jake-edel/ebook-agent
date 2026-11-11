@@ -46,6 +46,7 @@ class EbooksPlugin:
         self.host = config.irc.host
         self.channel = config.irc.channel
         self.offer_timeout = config.downloads.offer_timeout
+        self.max_requests_per_bot = config.downloads.max_requests_per_bot
         self.show_private_messages = config.irc.show_private_messages
         self.downloads = Downloads(config.downloads)
         # Set once we're in the channel (end of NAMES), cleared on disconnect
@@ -67,6 +68,8 @@ class EbooksPlugin:
         # ambiguous: searches go one at a time. Book requests name their bot
         # and don't wait for each other.
         self._search_lock = asyncio.Lock()
+        # One per bot, by lower-cased nick: book requests it has from us now
+        self._bot_slots: dict[str, asyncio.Semaphore] = {}
 
     def connection_lost(self):
         # irc3 calls this on every plugin when the connection drops
@@ -222,9 +225,17 @@ class EbooksPlugin:
         `line` and `bot` come from check_request. Only an offer from that bot
         is accepted. The book keeps the name the bot gave it (sanitized), or
         its name inside the zip if it came zipped.
+
+        A bot only gets `max_requests_per_bot` requests from us at a time,
+        from sending the line until the file has arrived; later ones wait
+        their turn, unsent, in the order they were made.
         """
-        offer = await self._fetch(line, bot, update, key)
-        path = await self._receive(offer, self.downloads.safe_path(offer.filename), update)
+        slots = self._bot_slots.setdefault(
+            bot.lower(), asyncio.Semaphore(self.max_requests_per_bot))
+        async with slots:
+            offer = await self._fetch(line, bot, update, key)
+            path = await self._receive(offer, self.downloads.safe_path(offer.filename), update)
+        # The bot's part is done: unzipping doesn't need to hold its slot
         if _is_zip(offer.filename):
             path = await asyncio.to_thread(self.downloads.extract, path)
             log.info("Extracted: %s", path)

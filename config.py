@@ -56,6 +56,9 @@ class DownloadsConfig:
     # Seconds a bot has to make its DCC offer, from when the search or book
     # request is sent to the channel
     offer_timeout: float = 60.0
+    # Book requests one bot may have from us at once, from sending the line
+    # until its file has arrived. More wait their turn, to stay polite.
+    max_requests_per_bot: int = 2
     # Seconds to wait for a DCC sender to accept our connection
     connect_timeout: float = 15.0
     # Give up on a transfer after this many seconds without data
@@ -197,6 +200,8 @@ _MAX_REALNAME = 50
 _CHANNEL_RE = re.compile(r"^[#&][^\s,\x00-\x1f]{1,49}$")
 # DCC acks are 32-bit byte counts, so a transfer must stay under 4 GiB
 _MAX_SIZE_MIB_LIMIT = 4095
+# More than this at once from one bot is just greedy
+_MAX_REQUESTS_PER_BOT = 10
 
 
 def _validate(cfg: Config):
@@ -236,6 +241,9 @@ def _validate(cfg: Config):
 
     if not 1 <= dl.max_size_mib <= _MAX_SIZE_MIB_LIMIT:
         errors.append(f"downloads.max_size_mib: must be 1–{_MAX_SIZE_MIB_LIMIT}, got {dl.max_size_mib}")
+    if not 1 <= dl.max_requests_per_bot <= _MAX_REQUESTS_PER_BOT:
+        errors.append(f"downloads.max_requests_per_bot: must be 1–{_MAX_REQUESTS_PER_BOT}, "
+                      f"got {dl.max_requests_per_bot}")
     if dl.disk_headroom_mib < 0:
         errors.append(f"downloads.disk_headroom_mib: can't be negative, got {dl.disk_headroom_mib}")
     for name, path in [("downloads.dir", dl.dir), ("downloads.searches_dir", dl.searches_dir)]:

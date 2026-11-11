@@ -35,6 +35,10 @@ disk_headroom_mib = 512
 # Seconds a bot has to offer the file, from when the search or book request
 # is sent to the channel
 offer_timeout = 60
+# Book requests one bot may have from you at once, until each file has
+# arrived. More wait their turn (1-10). Bots limit how many you may queue,
+# and asking for more than that is rude
+max_requests_per_bot = 2
 # Seconds to wait for a bot to accept the DCC connection
 connect_timeout = 15
 # Give up on a transfer after this many seconds without data

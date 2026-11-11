@@ -40,7 +40,8 @@ class RequestKind(enum.StrEnum):
 
 
 class RequestState(enum.StrEnum):
-    # Accepted, but not sent yet: still connecting, or another search is in flight
+    # Accepted, but not sent yet: still connecting, another search is in
+    # flight, or the bot already has as many of our requests as it may
     PENDING = "pending"
     # Sent to the channel; waiting for the bot to make a DCC offer
     WAITING = "waiting"
