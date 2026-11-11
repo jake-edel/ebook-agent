@@ -40,6 +40,11 @@ def list_searches(directory: Path) -> list[PastSearch]:
     return sorted(searches, key=lambda s: s.when, reverse=True)
 
 
+def load_search(path: Path) -> PastSearch:
+    """One results file, e.g. a search that just finished. Raises OSError."""
+    return _past_search(path, load_results(path))
+
+
 def _past_search(path: Path, results: SearchResults) -> PastSearch:
     m = _NAME_RE.match(path.stem)
     if m:

@@ -1,4 +1,4 @@
-"""The TUI: browsing past searches on disk, and requesting books from them."""
+"""The TUI: searching, browsing past searches on disk, and requesting books from them."""
 
 import asyncio
 import dataclasses
@@ -22,7 +22,16 @@ from core import (
     RequestUpdated,
     StatusChanged,
 )
-from tui.app import DIVIDER, PREVIEW_DELAY, EbooksApp, ResultsTable, SearchList, human_size, marker
+from tui.app import (
+    DIVIDER,
+    PREVIEW_DELAY,
+    EbooksApp,
+    ResultsTable,
+    SearchInput,
+    SearchList,
+    human_size,
+    marker,
+)
 from tui.library import list_searches
 
 S = RequestState
@@ -96,6 +105,7 @@ class FakeAgent:
     def __init__(self):
         self.state = ConnectionState.STOPPED
         self.made: list[str] = []      # lines passed to request()
+        self.searched: list[str] = []  # queries passed to search()
         self._requests: dict[str, Request] = {}
         self._ids = itertools.count(1)
         self._queues: list[asyncio.Queue] = []
@@ -142,6 +152,13 @@ class FakeAgent:
         self.made.append(line)
         return self.add(Request(id=str(next(self._ids)), kind=RequestKind.BOOK, line=line,
                                 bot=bot, state=S.PENDING, created_at=0, updated_at=0))
+
+    def search(self, query):
+        query = plugin.check_query(query)  # the real checks
+        self.searched.append(query)
+        return self.add(Request(id=str(next(self._ids)), kind=RequestKind.SEARCH,
+                                line=f"@search {query}", bot=None, state=S.PENDING,
+                                created_at=time.time(), updated_at=time.time()))
 
     def add(self, req):
         self._requests[req.id] = req
@@ -511,3 +528,245 @@ def test_quitting_with_a_request_in_flight_asks_first(two_searches):
     assert running and bar.endswith("1 request in progress: press q again to quit and cancel")
     assert after is False
     assert agent.stopped and agent.requests()[0].state is S.CANCELLED
+
+
+# --- searching ----------------------------------------------------------------
+
+AC_DC = (
+    'Searched 14 lists for "ac/dc" , found 1 matches. Enjoy!\r\n'
+    '\r\n'
+    '!Bsk AC_DC - Highway to Hell.epub ::INFO:: 1MB\r\n'
+)
+
+
+def sidebar(app):
+    """The sidebar's entries, as their two lines of text."""
+    options = app.query_one(SearchList).options
+    return [tuple(str(o.prompt).split("\n")) for o in options]
+
+
+def highlighted(app):
+    sidebar_ = app.query_one(SearchList)
+    return str(sidebar_.get_option_at_index(sidebar_.highlighted).prompt).split("\n")[0]
+
+
+def prompt_open(app):
+    return app.query_one("#prompt").display
+
+
+def finish_search(agent, req, searches_dir, contents=AC_DC, name="20261111-120000 ac_dc.txt"):
+    """What the agent does when a search's results arrive."""
+    path = searches_dir / name
+    path.write_text(contents)
+    agent.update(req.id, state=S.DONE, path=path)
+
+
+def test_s_opens_the_prompt_and_esc_closes_it(two_searches):
+    async def steps(app, pilot):
+        await pilot.press("enter", "s")  # from the results pane
+        opened = (prompt_open(app), isinstance(app.focused, SearchInput))
+        await pilot.press("escape")
+        return opened, prompt_open(app), app.focused
+
+    (opened, focused), closed, back = run_app(two_searches, steps)
+    assert opened and focused
+    assert not closed
+    assert isinstance(back, ResultsTable)  # back where you were
+
+
+def test_enter_sends_the_search(two_searches):
+    agent = FakeAgent()
+
+    async def steps(app, pilot):
+        await pilot.press("s", *"ac/dc", "enter")
+        await pilot.pause()
+        return prompt_open(app), sidebar(app)[0], app.focused
+
+    is_open, top, focused = run_app(two_searches, steps, agent=agent)
+    assert agent.searched == ["ac/dc"]
+    assert not is_open
+    assert top == ("ac/dc", "queued")
+    assert isinstance(focused, SearchList)
+
+
+def test_keys_type_into_the_prompt_instead_of_acting(two_searches):
+    agent = FakeAgent()
+
+    async def steps(app, pilot):
+        await pilot.press("s", *"qsdjk", "enter")
+        await pilot.pause()
+        return app.is_running
+
+    assert run_app(two_searches, steps, agent=agent)
+    assert agent.searched == ["qsdjk"]
+
+
+def test_a_rejected_query_keeps_the_prompt_open(two_searches):
+    agent = FakeAgent()
+
+    async def steps(app, pilot):
+        await pilot.press("s", "space", "enter")
+        return prompt_open(app), status(app)
+
+    is_open, bar = run_app(two_searches, steps, agent=agent)
+    assert agent.searched == []
+    assert is_open and bar.endswith("Search query is empty")
+
+
+def test_a_search_progresses_through_its_states(two_searches):
+    agent = FakeAgent()
+
+    async def steps(app, pilot):
+        await pilot.press("s", *"ac/dc", "enter")
+        await pilot.pause()
+        [req] = agent.requests()
+        seen = []
+        for changes in (
+            dict(state=S.WAITING),
+            dict(state=S.TRANSFERRING, filename="results.zip", size=1000),
+            dict(received=400),
+        ):
+            agent.update(req.id, **changes)
+            await pilot.pause()
+            seen.append((sidebar(app)[0][1],))
+        return seen
+
+    assert [s[0] for s in run_app(two_searches, steps, agent=agent)] == [
+        "searching…", "receiving 0%", "receiving 40%"]
+
+
+def test_its_results_open_when_they_arrive(two_searches):
+    agent = FakeAgent()
+
+    async def steps(app, pilot):
+        await pilot.press("s", *"ac/dc", "enter")
+        await pilot.pause()
+        finish_search(agent, agent.requests()[0], two_searches)
+        await pilot.pause()
+        return sidebar(app), highlighted(app), app.shown.query, rows(app), app.focused, status(app)
+
+    entries, high, shown, shown_rows, focused, bar = run_app(two_searches, steps, agent=agent)
+    assert entries[0] == ("ac/dc", "Nov 11 12:00 · 1 result")
+    assert len(entries) == 3  # the placeholder became the search on disk
+    assert high == shown == "ac/dc"
+    assert [r[4] for r in shown_rows] == ["AC_DC - Highway to Hell"]
+    assert isinstance(focused, ResultsTable)
+    assert bar.endswith("ac/dc: 1 result")
+
+
+def test_results_arriving_while_typing_dont_take_the_focus(two_searches):
+    agent = FakeAgent()
+
+    async def steps(app, pilot):
+        await pilot.press("s", *"ac/dc", "enter")
+        await pilot.pause()
+        await pilot.press("s", *"du")
+        finish_search(agent, agent.requests()[0], two_searches)
+        await pilot.pause()
+        await pilot.press(*"ne")
+        return app.shown.query, app.query_one(SearchInput).value, app.focused
+
+    shown, typed, focused = run_app(two_searches, steps, agent=agent)
+    assert shown == "ac/dc"
+    assert typed == "dune"
+    assert isinstance(focused, SearchInput)
+
+
+def test_the_pane_shows_a_running_search_when_its_highlighted(two_searches):
+    agent = FakeAgent()
+
+    async def steps(app, pilot):
+        await pilot.press("s", *"ac/dc", "enter")
+        await pilot.pause()
+        app.query_one(SearchList).highlighted = 0
+        await settle(pilot)
+        table = app.query_one(ResultsTable)
+        before = (table.border_title, table.border_subtitle, rows(app))
+        agent.update(agent.requests()[0].id, state=S.WAITING)
+        await pilot.pause()
+        return before, table.border_subtitle
+
+    (title, subtitle, shown), after = run_app(two_searches, steps, agent=agent)
+    assert (title, subtitle, shown) == ("results: ac/dc", "queued", [])
+    assert after == "searching…"
+
+
+def test_a_failed_search_stays_until_dismissed(two_searches):
+    agent = FakeAgent()
+
+    async def steps(app, pilot):
+        await pilot.press("s", *"ac/dc", "enter")
+        await pilot.pause()
+        agent.update(agent.requests()[0].id, state=S.FAILED, error="No DCC offer received within 60s")
+        await pilot.pause()
+        app.query_one(SearchList).highlighted = 0
+        await settle(pilot)
+        failed = (sidebar(app)[0], app.query_one(ResultsTable).border_subtitle, status(app))
+        await pilot.press("d")
+        return failed, sidebar(app), highlighted(app)
+
+    (top, subtitle, bar), after, high = run_app(two_searches, steps, agent=agent)
+    assert top == ("ac/dc", "✗ failed")
+    assert subtitle == "No DCC offer received within 60s"
+    assert bar.endswith('search "ac/dc": No DCC offer received within 60s')
+    assert [e[0] for e in after] == ["dune frank herbert", "warhammer"]
+    assert high == "dune frank herbert"
+
+
+def test_enter_on_a_failed_search_runs_it_again(two_searches):
+    agent = FakeAgent()
+
+    async def steps(app, pilot):
+        await pilot.press("s", *"ac/dc", "enter")
+        await pilot.pause()
+        agent.update(agent.requests()[0].id, state=S.FAILED, error="nope")
+        await pilot.pause()
+        app.query_one(SearchList).highlighted = 0
+        await pilot.press("enter")
+        await pilot.pause()
+        return sidebar(app)
+
+    entries = run_app(two_searches, steps, agent=agent)
+    assert agent.searched == ["ac/dc", "ac/dc"]
+    assert [e for e in entries if e[0] == "ac/dc"] == [("ac/dc", "queued")]
+
+
+def test_running_searches_cant_be_dismissed(two_searches):
+    agent = FakeAgent()
+
+    async def steps(app, pilot):
+        await pilot.press("s", *"ac/dc", "enter")
+        await pilot.pause()
+        app.query_one(SearchList).highlighted = 0
+        await pilot.press("d")
+        return len(sidebar(app)), status(app)
+
+    count, bar = run_app(two_searches, steps, agent=agent)
+    assert count == 3
+    assert bar.endswith('search "ac/dc" is still running')
+
+
+def test_searches_from_elsewhere_appear_too(two_searches):
+    # e.g. Neovim's :Ebook search over the socket
+    agent = FakeAgent()
+
+    async def steps(app, pilot):
+        agent.add(Request(id="9", kind=RequestKind.SEARCH, line="@search ac/dc", bot=None,
+                          state=S.WAITING, created_at=time.time(), updated_at=time.time()))
+        await pilot.pause()
+        return sidebar(app)[0]
+
+    assert run_app(two_searches, steps, agent=agent) == ("ac/dc", "searching…")
+
+
+def test_first_search_with_none_on_disk(searches):
+    agent = FakeAgent()
+
+    async def steps(app, pilot):
+        await pilot.press("s", *"ac/dc", "enter")
+        await pilot.pause()
+        finish_search(agent, agent.requests()[0], searches)
+        await pilot.pause()
+        return [e[0] for e in sidebar(app)], app.shown.query
+
+    assert run_app(searches, steps, agent=agent) == (["ac/dc"], "ac/dc")

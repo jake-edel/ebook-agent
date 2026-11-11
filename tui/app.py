@@ -1,4 +1,4 @@
-"""The TUI app: browse past searches on disk, and request books from them.
+"""The TUI app: search, browse past searches on disk, and request books from them.
 
 The app runs the agent (and the Unix socket, so Neovim's :Ebook keeps
 working) on Textual's event loop, and talks to it only through the core
@@ -6,13 +6,14 @@ interface (core.AgentService).
 """
 
 import asyncio
+from datetime import datetime
 from pathlib import Path
 
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
-from textual.widgets import DataTable, Footer, OptionList, Static
+from textual.widgets import DataTable, Footer, Input, Label, OptionList, Static
 from textual.widgets.option_list import Option
 
 from core import (
@@ -30,7 +31,7 @@ from core import (
 from results import ResultItem
 from unix_socket import SocketUnavailableError, unix_socket
 
-from .library import PastSearch, list_searches
+from .library import PastSearch, list_searches, load_search
 
 # --- keys -------------------------------------------------------------------
 #
@@ -43,11 +44,16 @@ _MOVE = [
 ]
 SEARCH_KEYS = _MOVE + [
     Binding("l,right", "select", "Open", show=False),  # as Enter
+    Binding("d", "app.dismiss_search", "Dismiss", show=False),  # a failed search
 ]
 RESULT_KEYS = _MOVE + [
     Binding("h,left,escape", "app.focus_searches", "Back"),
 ]
+INPUT_KEYS = [
+    Binding("escape", "app.close_search_input", "Cancel"),
+]
 APP_KEYS = [
+    Binding("s", "open_search_input", "Search"),
     Binding("q", "quit", "Quit"),
 ]
 
@@ -61,6 +67,11 @@ PREVIEW_DELAY = 0.15
 
 class SearchList(OptionList):
     BINDINGS = SEARCH_KEYS
+
+
+class SearchInput(Input):
+    """The one-line search prompt. Printable keys are typed, not bindings."""
+    BINDINGS = INPUT_KEYS
 
 
 # The row between the epubs and the other formats
@@ -154,11 +165,56 @@ def marker(r: Request | None) -> str:
 _RETRYABLE = (RequestState.FAILED, RequestState.CANCELLED)
 
 
-def _search_label(s: PastSearch) -> Text:
-    count = len(s.results.items)
+# --- the sidebar --------------------------------------------------------------
+#
+# Each entry is a search on disk, or a search made this session that hasn't
+# produced a results file: still running, or failed (kept until dismissed).
+# A search that finishes becomes a file on disk like any other.
+
+Entry = PastSearch | Request
+
+
+def _entry_id(entry: Entry) -> str:
+    if isinstance(entry, PastSearch):
+        return f"file:{entry.path}"
+    return f"search:{entry.id}"
+
+
+def _entry_time(entry: Entry) -> datetime:
+    if isinstance(entry, PastSearch):
+        return entry.when
+    return datetime.fromtimestamp(entry.created_at)
+
+
+def search_query(r: Request) -> str:
+    return r.line.removeprefix("@search ")
+
+
+def search_progress(r: Request) -> str:
+    """How a search that isn't on disk yet is doing, in a few words."""
+    match r.state:
+        case RequestState.PENDING:
+            return "queued"
+        case RequestState.WAITING:
+            return "searching…"
+        case RequestState.TRANSFERRING:
+            return f"receiving {_progress(r)}%"
+        case RequestState.DONE:
+            return "done"
+        case RequestState.FAILED:
+            return "✗ failed"
+        case RequestState.CANCELLED:
+            return "– cancelled"
+
+
+def _entry_label(entry: Entry) -> Text:
+    if isinstance(entry, Request):
+        style = "red" if entry.state is RequestState.FAILED else "dim"
+        return Text.assemble((search_query(entry), "bold"), "\n", (search_progress(entry), style))
+    count = len(entry.results.items)
     return Text.assemble(
-        (s.query, "bold"), "\n",
-        (f"{s.when:%b %d %H:%M} · {count} result{'' if count == 1 else 's'}", "dim"),
+        (entry.query, "bold"), "\n",
+        (f"{entry.when:%b %d %H:%M} · {count} result{'' if count == 1 else 's'}", "dim"),
     )
 
 
@@ -184,6 +240,19 @@ class EbooksApp(App):
     SearchList:focus, ResultsTable:focus {
         border: round $accent;
     }
+    #prompt {
+        height: 1;
+        padding: 0 1;
+    }
+    #prompt Label {
+        color: $text-muted;
+    }
+    SearchInput, SearchInput:focus {
+        border: none;
+        height: 1;
+        padding: 0 1;
+        width: 1fr;
+    }
     #status {
         height: 1;
         padding: 0 1;
@@ -197,13 +266,18 @@ class EbooksApp(App):
         self.agent = agent
         self.searches_dir = searches_dir
         self.socket_path = socket_path
+        # The sidebar: searches on disk, and this session's searches that
+        # aren't (yet), by request id
         self.searches: list[PastSearch] = []
-        # The search shown in the results pane, its rows by row key, and the
+        self._live: dict[str, Request] = {}
+        self._entries: dict[str, Entry] = {}  # by option id
+        # The entry shown in the results pane, its rows by row key, and the
         # row key of each request line in it
-        self.shown: PastSearch | None = None
+        self.shown: Entry | None = None
         self._rows: dict[str, ResultItem] = {}
         self._row_for_line: dict[str, str] = {}
         self._preview = None  # Timer for a pending preview
+        self._focus_before_search = None  # to go back to when the prompt closes
         # The newest request for each line sent, whoever made it (us, or a
         # socket client like Neovim)
         self._latest: dict[str, Request] = {}
@@ -219,6 +293,9 @@ class EbooksApp(App):
         with Horizontal():
             yield SearchList(id="searches")
             yield ResultsTable(id="results", cursor_type="row", zebra_stripes=True)
+        with Horizontal(id="prompt"):
+            yield Label("@search")
+            yield SearchInput(placeholder="title or author, Enter to search, Esc to cancel")
         yield Static(id="status")
         yield Footer()
 
@@ -227,12 +304,11 @@ class EbooksApp(App):
         sidebar.border_title = "searches"
         self.query_one(ResultsTable).border_title = "results"
 
+        self.query_one("#prompt").display = False
+
         self.searches = list_searches(self.searches_dir)
-        sidebar.add_options(Option(_search_label(s), id=str(i)) for i, s in enumerate(self.searches))
-        if self.searches:
-            sidebar.highlighted = 0
-            self.show(self.searches[0])
-        else:
+        self._rebuild_sidebar()  # and shows the newest
+        if not self.searches:
             self._note = f"no searches yet in {self.searches_dir}"
         sidebar.focus()
 
@@ -266,6 +342,8 @@ class EbooksApp(App):
             if (key := self._row_for_line.get(r.line)) is not None:
                 self.query_one(ResultsTable).update_cell(key, "state", marker(r))
             self._note = describe_request(r)
+            if r.kind is RequestKind.SEARCH:
+                self._search_updated(r)
         elif isinstance(event, BotMessage) and event.request_id is not None:
             # Replies to requests; other messages to us wait for a log view
             self._note = f"{event.nick}: {event.text}"
@@ -310,22 +388,130 @@ class EbooksApp(App):
 
     # --- searches pane --------------------------------------------------
 
+    def _rebuild_sidebar(self, highlight: str | None = None):
+        """Refill the sidebar, newest first, keeping the highlight where it was
+        (or moving it to the entry with option id `highlight`)."""
+        sidebar = self.query_one(SearchList)
+        if highlight is None and (current := sidebar.highlighted_option) is not None:
+            highlight = current.id
+        old_index = sidebar.highlighted
+        entries = sorted([*self.searches, *self._live.values()], key=_entry_time, reverse=True)
+        self._entries = {_entry_id(e): e for e in entries}
+        with self.prevent(OptionList.OptionHighlighted):
+            sidebar.set_options(Option(_entry_label(e), id=oid) for oid, e in self._entries.items())
+        if not entries:
+            return
+        if highlight in self._entries:
+            index = sidebar.get_option_index(highlight)
+        else:  # e.g. dismissed: stay put, as far as the list goes
+            index = min(old_index or 0, len(entries) - 1)
+        with self.prevent(OptionList.OptionHighlighted):
+            sidebar.highlighted = index
+        # Whatever is highlighted now is what the results pane should show
+        self.show(self._entries[sidebar.highlighted_option.id])
+
+    def _search_updated(self, r: Request):
+        """A search changed state: follow it in the sidebar, and open its
+        results when they arrive."""
+        if r.state is RequestState.DONE:
+            self._live.pop(r.id, None)
+            try:
+                search = load_search(r.path)
+            except OSError as e:
+                self._note = f"search \"{search_query(r)}\": can't read the results: {e}"
+                self._rebuild_sidebar()
+                return
+            self.searches.append(search)
+            n = len(search.results.items)
+            self._note = f"{search.query}: {n} result{'' if n == 1 else 's'}"
+            self._rebuild_sidebar(highlight=_entry_id(search))
+            # Into the results, unless the search prompt is open again
+            if not self.query_one(SearchInput).has_focus:
+                self.query_one(ResultsTable).focus()
+            return
+        is_new = r.id not in self._live
+        self._live[r.id] = r
+        if is_new:
+            self._rebuild_sidebar()
+        else:
+            self._entries[_entry_id(r)] = r
+            self.query_one(SearchList).replace_option_prompt(_entry_id(r), _entry_label(r))
+            if isinstance(self.shown, Request) and self.shown.id == r.id:
+                self.show(r)
+
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted):
         # Moving through the list previews each search's results, once it settles
         if self._preview:
             self._preview.stop()
-        search = self.searches[int(event.option.id)]
-        self._preview = self.set_timer(PREVIEW_DELAY, lambda: self.show(search))
+        entry = self._entries[event.option.id]
+        self._preview = self.set_timer(PREVIEW_DELAY, lambda: self.show(entry))
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected):
         if self._preview:
             self._preview.stop()
-        self.show(self.searches[int(event.option.id)])
+        entry = self._entries[event.option.id]
+        if isinstance(entry, Request):
+            if entry.state in _RETRYABLE:
+                self._retry_search(entry)
+            else:
+                self.note(f'search "{search_query(entry)}": {search_progress(entry)}')
+            return
+        self.show(entry)
         self.query_one(ResultsTable).focus()
 
-    def show(self, search: PastSearch):
-        if search is self.shown:
+    def _retry_search(self, failed: Request):
+        try:
+            self.agent.search(search_query(failed))  # its events add the new entry
+        except ValueError as e:
+            self.note(str(e))
             return
+        self._live.pop(failed.id, None)
+        self._rebuild_sidebar()
+
+    def action_dismiss_search(self):
+        option = self.query_one(SearchList).highlighted_option
+        entry = self._entries.get(option.id) if option else None
+        if not isinstance(entry, Request):
+            return  # searches on disk are deleted by hand, for now
+        if not entry.state.finished:
+            self.note(f'search "{search_query(entry)}" is still running')
+            return
+        del self._live[entry.id]
+        self._rebuild_sidebar()
+
+    # --- search prompt --------------------------------------------------
+
+    def action_open_search_input(self):
+        prompt = self.query_one("#prompt")
+        search_input = self.query_one(SearchInput)
+        if not prompt.display:
+            self._focus_before_search = self.focused
+            search_input.value = ""
+            prompt.display = True
+        search_input.focus()
+
+    def action_close_search_input(self):
+        self.query_one("#prompt").display = False
+        before = self._focus_before_search
+        (before if before and before.is_attached else self.query_one(SearchList)).focus()
+
+    def on_input_submitted(self, event: Input.Submitted):
+        try:
+            self.agent.search(event.value)  # its events add it to the sidebar
+        except ValueError as e:
+            self.note(str(e))  # the prompt stays open, to fix the query
+            return
+        self.action_close_search_input()
+
+    # --- results pane ---------------------------------------------------
+
+    def show(self, entry: Entry):
+        if entry is self.shown:
+            return
+        if isinstance(entry, Request):
+            self._show_live(entry)
+            return
+        search = entry
         self.shown = search
         table = self.query_one(ResultsTable)
         # Columns too, sized here from this search's rows: Textual's own
@@ -375,6 +561,17 @@ class EbooksApp(App):
             parts.append(f"{len(r.unparsed)} not shown")  # non-standard lines, see results.py
         table.border_subtitle = " · ".join(parts)
 
+    def _show_live(self, r: Request):
+        """A search with no results file: just how it's doing."""
+        self.shown = r
+        table = self.query_one(ResultsTable)
+        table.clear(columns=True)
+        self._rows = {}
+        self._row_for_line = {}
+        table.divider_row = None
+        table.border_title = f"results: {search_query(r)}"
+        table.border_subtitle = r.error if r.state is RequestState.FAILED else search_progress(r)
+
     def _add_row(self, table: ResultsTable, item: ResultItem):
         key = str(item.line_no)
         self._rows[key] = item
@@ -382,8 +579,6 @@ class EbooksApp(App):
         size = Text(human_size(item.size_bytes), justify="right")
         state = marker(self._latest.get(item.request))
         table.add_row(state, item.bot, item.ext or "", size, item.title, key=key)
-
-    # --- results pane ---------------------------------------------------
 
     def action_focus_searches(self):
         self.query_one(SearchList).focus()

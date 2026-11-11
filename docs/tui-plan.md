@@ -128,7 +128,7 @@ Built in thin slices, each one usable on its own. Using each stage decides the n
 |---|---|---|
 | 1 | Browse past searches from disk: searches list (newest first), results table, `j`/`k`, `Enter`/`l` in, `h`/`Esc` back, `q` quit. No IRC | done |
 | 2 | Go live: the TUI starts the agent and the socket, the status bar shows the connection, `Enter` on a result requests it. A state column on each row (`…`, `42%`, `✓`, `✗`) and the status bar (progress, bot replies, the saved path or the error) follow it, including requests made over the socket. `q` asks first if something's in flight | done |
-| 3 | Search from the TUI: `s` opens a one-line input; the new search appears at the top and opens when its results arrive | |
+| 3 | Search from the TUI: `s` opens a one-line `@search` prompt (Enter sends, Esc cancels, a rejected query keeps it open with the reason). The search appears at the top of the sidebar at once, following its state (`queued`, `searching…`, `receiving 40%`), including searches made over the socket. Its results always open when they arrive, without taking focus from the prompt. A failed search stays in the sidebar with `✗` and its reason: Enter runs it again, `d` dismisses it | done |
 | 4 | Filter results: `/` narrows the table as you type, `Esc` clears | |
 | 5 | See what's happening: transfers (with cancel), downloads, the log. Where they live is decided by stages 2–4 | |
 | 6 | Polish from use: offline bots greyed out (`members()`), sorting, `?` help, `gg`/`G`, the TUI as the default with `--headless` | |
