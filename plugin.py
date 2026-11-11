@@ -11,7 +11,7 @@ from pathlib import Path
 import irc3
 
 from config import Config
-from core import RequestState
+from core import ConnectionState, RequestState
 from dcc import DccOffer, DownloadError, Downloads, FileTooLargeError, InvalidOfferError
 
 log = logging.getLogger(__name__)
@@ -52,8 +52,10 @@ class EbooksPlugin:
         self.ready = asyncio.Event()
         # Set when the server connection drops (e.g. after our QUIT)
         self.disconnected = asyncio.Event()
-        # Called with (connected, reason) when `ready` changes
-        self.on_status: Callable[[bool, str], None] = lambda connected, reason: None
+        # Called with the new state as we connect, join and drop
+        self.on_status: Callable[[ConnectionState], None] = lambda state: None
+        # Called when someone may have joined or left the channel
+        self.on_members_changed: Callable[[], None] = lambda: None
         # Called with (nick, text, key) for each message a user sends us
         # directly. `key` is that of the request the message most likely
         # belongs to (see _match), or None.
@@ -69,8 +71,6 @@ class EbooksPlugin:
     def connection_lost(self):
         # irc3 calls this on every plugin when the connection drops
         self.disconnected.set()
-        if not self.ready.is_set():
-            return
         self.ready.clear()
         # Our nick is gone, and with it any place in a bot's queue: fail the
         # lines still waiting for an offer rather than resend them (a bot that
@@ -79,8 +79,13 @@ class EbooksPlugin:
         for w in self._waiters:
             if not w.offer.done():
                 w.offer.set_exception(ConnectionError("Disconnected from IRC before an offer arrived"))
-        log.warning("Disconnected from %s", self.host)
-        self.on_status(False, "disconnected")
+        # EbooksAgent.stop() marks the connection closed before its QUIT
+        if getattr(getattr(self.bot, "protocol", None), "closed", False):
+            log.info("Connection to %s closed", self.host)
+        else:
+            log.warning("Disconnected from %s; reconnecting", self.host)
+        self.on_status(ConnectionState.DISCONNECTED)
+        self.on_members_changed()
 
     # **kwargs - pick up and discard any additional arguments
     # to prevent error from being thrown
@@ -90,6 +95,7 @@ class EbooksPlugin:
         # server has sent the member list (on_names_end).
         self.bot.join(self.channel)
         log.info("Connected to %s, joining %s", self.host, self.channel)
+        self.on_status(ConnectionState.CONNECTING)
 
     def on_names_end(self, channel=None, **kwargs):
         # End of NAMES (366) for our channel: we're in, and the member list the
@@ -98,13 +104,24 @@ class EbooksPlugin:
             return
         self.ready.set()
         log.info("Joined %s", self.channel)
-        self.on_status(True, "joined")
+        self.on_status(ConnectionState.READY)
+        self.on_members_changed()
 
-    def _is_channel_member(self, nick: str) -> bool:
+    def on_membership(self, **kwargs):
+        # A JOIN, PART, QUIT, KICK or NICK. irc3's userlist plugin keeps the
+        # member list itself; we only pass on that it may have changed.
+        self.on_members_changed()
+
+    def members(self) -> frozenset[str]:
+        """Who's in the channel, lower-cased. Empty until we've joined."""
+        if not self.ready.is_set():
+            return frozenset()
         # irc3's userlist plugin tracks who's in each channel we've joined.
         # .get() so we don't create an empty entry in its defaultdict
-        members = self.bot.channels.get(self.channel, ())
-        return any(m.lower() == nick.lower() for m in members)
+        return frozenset(m.lower() for m in self.bot.channels.get(self.channel, ()))
+
+    def _is_channel_member(self, nick: str) -> bool:
+        return nick.lower() in self.members()
 
     def on_message(self, mask=None, command=None, target=None, text=None, **kwargs):
         # Log everything addressed to us (DMs, bot replies, DCC offers, server

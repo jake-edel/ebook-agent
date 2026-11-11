@@ -98,13 +98,17 @@ The TUI talks to an `AgentService` interface, defined in `core.py` and described
 
 ```python
 class AgentService(Protocol):
+    async def start(self) -> None: ...                     # returns at once; then watch StatusChanged
+    async def wait_ready(self, timeout=None) -> None: ...  # until the channel is joined
+    async def stop(self) -> None: ...                      # for good; event streams end
     def search(self, query: str) -> Request: ...           # returns immediately; work continues in the background
     def request(self, line: str) -> Request: ...           # same, for a "!Bot ..." line
     def cancel(self, request_id: str) -> None: ...
     async def wait(self, request_id: str) -> Request: ...  # the final snapshot
-    def events(self) -> AsyncIterator[Event]: ...          # StatusChanged, RequestUpdated, BotMessage
-    def status(self) -> AgentStatus: ...                   # connected?, server, nick, TLS
+    def events(self) -> AsyncIterator[Event]: ...          # StatusChanged, RequestUpdated, BotMessage, MembersChanged
+    def status(self) -> AgentStatus: ...                   # connection state, server, nick, TLS
     def requests(self) -> tuple[Request, ...]: ...         # every request this session
+    def members(self) -> frozenset[str]: ...               # who's in the channel (offline bots greyed out)
 ```
 
 - **Phase 1:** `AgentService` is the agent object itself, running in the TUI's process. The Unix socket keeps running there too, as it does in the headless agent today.

@@ -12,7 +12,7 @@ replies until the server closes the connection:
           or "cancelled"
 
     -> {"cmd": "status"}
-       <- {"type": "Status", "status": {"connected": true, "server": ..., ...}}
+       <- {"type": "Status", "status": {"state": "ready", "server": ..., ...}}
 
 Replies are the core's own events (core.to_dict), limited to the client's
 request. A command that can't be carried out gets
@@ -219,6 +219,8 @@ async def _serve_client(agent, reader: asyncio.StreamReader, writer: asyncio.Str
                     return
             elif isinstance(event, BotMessage) and event.request_id == req.id:
                 await _send(writer, to_dict(event))
+        # The stream ended: the agent stopped without finishing the request
+        raise _ClientError("agent stopped")
     finally:
         await events.aclose()
 

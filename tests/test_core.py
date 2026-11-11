@@ -11,6 +11,8 @@ import core
 from core import (
     AgentStatus,
     BotMessage,
+    ConnectionState,
+    MembersChanged,
     Request,
     RequestKind,
     RequestState,
@@ -19,7 +21,7 @@ from core import (
     to_dict,
 )
 
-STATUS = AgentStatus(connected=True, server="irc.irchighway.net", nick="ebooks_cli",
+STATUS = AgentStatus(state=ConnectionState.READY, server="irc.irchighway.net", nick="ebooks_cli",
                      channel="#ebooks", peer="142.44.0.1", tls_fingerprint="ab12")
 REQ = Request(id="r1", kind=RequestKind.BOOK, line="!Bsk Dune.epub", bot="Bsk",
               state=RequestState.DONE, created_at=1.0, updated_at=2.0,
@@ -27,7 +29,7 @@ REQ = Request(id="r1", kind=RequestKind.BOOK, line="!Bsk Dune.epub", bot="Bsk",
 
 # Types allowed in core dataclass fields: plain values a JSON transport can carry
 _ALLOWED = {str, int, float, bool, type(None), Path, RequestKind, RequestState,
-            AgentStatus, Request}
+            ConnectionState, AgentStatus, Request}
 
 
 def _leaf_types(hint):
@@ -38,24 +40,29 @@ def _leaf_types(hint):
         yield from _leaf_types(a)
 
 
-@pytest.mark.parametrize("cls", [Request, AgentStatus, StatusChanged, RequestUpdated, BotMessage])
+CLASSES = [Request, AgentStatus, StatusChanged, RequestUpdated, BotMessage, MembersChanged]
+
+
+@pytest.mark.parametrize("cls", CLASSES)
 def test_fields_are_plain_values(cls):
     for name, hint in typing.get_type_hints(cls).items():
         for t in _leaf_types(hint):
             assert t in _ALLOWED, f"{cls.__name__}.{name} uses {t!r}"
 
 
-@pytest.mark.parametrize("cls", [Request, AgentStatus, StatusChanged, RequestUpdated, BotMessage])
+@pytest.mark.parametrize("cls", CLASSES)
 def test_snapshots_are_immutable(cls):
     assert cls.__dataclass_params__.frozen
 
 
 def test_event_union_covers_every_event_class():
-    assert set(typing.get_args(core.Event)) == {StatusChanged, RequestUpdated, BotMessage}
+    assert set(typing.get_args(core.Event)) == {StatusChanged, RequestUpdated, BotMessage,
+                                                MembersChanged}
 
 
 @pytest.mark.parametrize("event", [
-    StatusChanged(STATUS, reason="joined"),
+    StatusChanged(STATUS),
+    MembersChanged(),
     RequestUpdated(REQ),
     BotMessage("Bsk", "File not found", request_id="r1"),
 ])
@@ -70,6 +77,15 @@ def test_request_serialization():
     assert data["state"] == "done"
     assert data["path"] == "/books/Dune.epub"
     assert data["error"] is None
+
+
+def test_status_serialization():
+    assert to_dict(STATUS)["state"] == "ready"
+
+
+def test_frozensets_become_sorted_lists():
+    # e.g. members(), if a transport sends it
+    assert to_dict(frozenset({"search", "bsk"})) == ["bsk", "search"]
 
 
 def test_finished_states():

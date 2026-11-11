@@ -25,12 +25,29 @@ The core must work unchanged for both. Choosing B later should mean writing a tr
 
 | | Call | Returns |
 |---|---|---|
-| Lifecycle | `await start()`, `await stop()` | — |
+| Lifecycle | `await start()` | — (returns at once; connecting carries on in the background) |
+| | `await wait_ready(timeout)` | — once the channel is joined; raises `TimeoutError` |
+| | `await stop()` | — (for good: every event stream then ends) |
 | Commands | `search(query)`, `request(line)` | a `Request` snapshot **immediately**; the work continues in the background |
 | | `cancel(request_id)` | — |
 | | `await wait(request_id)` | the final snapshot (a convenience for scripts) |
 | State | `status()`, `requests()` | snapshots of the connection and of every request this session |
+| | `members()` | who's in the channel, lower-cased, e.g. to grey out offline bots |
 | Events | `events()` | a new, independent async stream per caller |
+
+### Connection
+
+`AgentStatus.state` is one of:
+
+```
+STOPPED ──start()──▶ CONNECTING ──joined──▶ READY
+                         ▲                    │
+                         └──── DISCONNECTED ◀─┘   (retried automatically)
+
+  (any state) ──stop()──▶ STOPPED, for good
+```
+
+Requests can be made from `start()` on. Until the channel is joined they wait in `PENDING`. A frontend can draw at once and show the state as it changes, and the headless CLI calls `wait_ready()` so a bad host fails at startup. An agent can't be restarted after `stop()`; make a new one.
 
 ### Requests
 
@@ -51,9 +68,12 @@ PENDING ──▶ WAITING ──▶ TRANSFERRING ──▶ DONE
 
 | Event | When |
 |---|---|
-| `StatusChanged` | joined the channel, or disconnected (`reason` says which) |
+| `StatusChanged` | the connection state changed (see above); carries the new `AgentStatus` |
 | `RequestUpdated` | any change to a request, including progress (at most 4 a second per transfer) |
 | `BotMessage` | a NOTICE or PRIVMSG sent to us by another user, linked by the same rule as offers: the oldest request waiting on that bot, else the search waiting for its offer |
+| `MembersChanged` | someone joined or left the channel; call `members()`. At most one every 2 seconds, since hundreds of members come and go |
+
+After `stop()`, each stream delivers what's queued (the cancelled requests, then `StatusChanged` to `STOPPED`) and ends, so a frontend's listener tasks finish by themselves.
 
 This deliberately replaces the plan's longer list (`OfferAccepted`, `Progress`, `Completed`, `Failed`, …) with one `RequestUpdated` that carries the whole snapshot. Frontends re-render the row instead of reconstructing state from deltas, and a client that missed events can call `requests()` to catch up.
 
@@ -61,7 +81,7 @@ This deliberately replaces the plan's longer list (`OfferAccepted`, `Progress`, 
 
 - Everything that crosses the boundary is a frozen dataclass of plain values. `to_dict()` turns it into JSON. `tests/test_core.py` enforces both.
 - No callbacks into frontends, and no asyncio objects in payloads.
-- Commands never block on IRC. Only `start`, `stop` and `wait` are async.
+- Commands never block on IRC. Only `start`, `wait_ready`, `stop` and `wait` are async.
 - Logging stays separate. Log lines are for humans; events are for programs.
 
 ## Decisions

@@ -100,6 +100,9 @@ class FakeBot:
     def privmsg(self, target, message):
         self.sent.append((target, message))
 
+    def join(self, channel):
+        pass
+
 
 @pytest.fixture
 def received(dl, monkeypatch):

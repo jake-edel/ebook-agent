@@ -7,6 +7,7 @@ import pytest
 import plugin
 from agent import EbooksAgent
 from config import Config, IrcConfig
+from core import ConnectionState
 from dcc import FileTooLargeError, InvalidOfferError
 
 from conftest import OUR_NICK, PUBLIC_IP, FakeBot, ip_int, make_plugin, mask, offer_text
@@ -202,14 +203,14 @@ def test_disconnect_fails_requests_waiting_for_an_offer(ebooks_plugin, received)
 
 def test_ready_only_for_our_channel(ebooks_plugin):
     statuses = []
-    ebooks_plugin.on_status = lambda connected, reason: statuses.append(connected)
+    ebooks_plugin.on_status = statuses.append
     ebooks_plugin.ready.clear()
     ebooks_plugin.on_names_end(channel="#other")
     assert not ebooks_plugin.ready.is_set()
     ebooks_plugin.on_names_end(channel="#EBOOKS")
     assert ebooks_plugin.ready.is_set()
     ebooks_plugin.connection_lost()
-    assert statuses == [True, False]
+    assert statuses == [ConnectionState.READY, ConnectionState.DISCONNECTED]
 
 
 # --- bad offers from an eligible sender fail fast -------------------------
@@ -333,3 +334,25 @@ def test_bot_messages_get_the_key_of_the_request_offers_would_go_to(ebooks_plugi
     run(go())
     assert got == [("Oatmeal", "b"), ("OATMEAL", "b"), ("Search", "s"), ("Mallory", "s"),
                    ("Oatmeal", "s")]
+
+
+# --- channel membership ---------------------------------------------------
+
+@pytest.mark.parametrize("line", [
+    ":Bsk!b@h.net JOIN #ebooks",
+    ":Bsk!b@h.net PART #ebooks :bye",
+    ":Bsk!b@h.net QUIT :gone",
+    ":Op!o@h.net KICK #ebooks Bsk :out",
+    ":Bsk!b@h.net NICK Bsk_away",
+])
+def test_membership_changes_are_passed_on(line):
+    async def go():
+        bot = EbooksAgent(Config(irc=IrcConfig(nick=OUR_NICK)))._build_bot()
+        p = bot.get_plugin(plugin.EbooksPlugin)
+        changes = []
+        p.on_members_changed = lambda: changes.append(1)
+        bot.dispatch(line)
+        await asyncio.sleep(0)  # irc3 runs handlers via call_soon
+        return changes
+
+    assert run(go())

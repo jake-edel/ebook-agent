@@ -10,7 +10,8 @@ import time
 import pytest
 
 import unix_socket as us
-from core import AgentStatus, BotMessage, Request, RequestKind, RequestState, RequestUpdated
+from core import (AgentStatus, BotMessage, ConnectionState, Request, RequestKind, RequestState,
+                  RequestUpdated)
 
 
 @pytest.fixture
@@ -48,8 +49,9 @@ class FakeAgent:
         self.subscribers.append(queue)
 
         async def stream():
-            while True:
-                yield await queue.get()
+            # None: the agent stopped, ending every stream
+            while (event := await queue.get()) is not None:
+                yield event
 
         return stream()
 
@@ -58,7 +60,8 @@ class FakeAgent:
             q.put_nowait(event)
 
     def status(self):
-        return AgentStatus(connected=True, server="irc.example.net", nick="me", channel="#ebooks")
+        return AgentStatus(state=ConnectionState.READY, server="irc.example.net", nick="me",
+                           channel="#ebooks")
 
     def search(self, query):
         return self._start("search", query, RequestKind.SEARCH, f"@search {query}")
@@ -255,7 +258,7 @@ def test_failed_request_is_the_final_snapshot(runtime_dir):
 def test_status_command(runtime_dir):
     replies = serve(FakeAgent(), runtime_dir / "ebooks.sock", {"cmd": "status"})
     assert replies == [{"type": "Status", "status": {
-        "connected": True, "server": "irc.example.net", "nick": "me", "channel": "#ebooks",
+        "state": "ready", "server": "irc.example.net", "nick": "me", "channel": "#ebooks",
         "peer": None, "tls_fingerprint": None}}]
 
 
@@ -339,6 +342,25 @@ def test_shutdown_ends_clients_still_waiting(runtime_dir):
     assert elapsed < 0.5
     assert json.loads(rest) == {"type": "Error", "error": "agent is shutting down"}
     assert not path.exists()
+
+
+def test_agent_stopping_mid_request_is_reported(runtime_dir):
+    # The agent's streams end when it stops, before the request finishes
+    path = runtime_dir / "ebooks.sock"
+    agent = FakeAgent(hang=True)
+
+    async def go():
+        task = await start_server(agent, path)
+        reader, writer = await asyncio.open_unix_connection(str(path))
+        writer.write(b'{"cmd": "search", "query": "dune"}\n')
+        await reader.readline()  # pending
+        agent.emit(None)
+        rest = await asyncio.wait_for(reader.read(), 1)
+        writer.close()
+        await stop_server(task)
+        return rest
+
+    assert json.loads(asyncio.run(go())) == {"type": "Error", "error": "agent stopped"}
 
 
 def test_client_hanging_up_early_is_harmless(runtime_dir, caplog):

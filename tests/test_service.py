@@ -6,7 +6,8 @@ import pytest
 
 from agent import EbooksAgent
 from config import Config, IrcConfig
-from core import BotMessage, RequestKind, RequestState, StatusChanged
+from core import (BotMessage, ConnectionState, MembersChanged, RequestKind, RequestState,
+                  RequestUpdated, StatusChanged)
 
 from conftest import OUR_NICK, make_plugin, mask, offer_text
 
@@ -19,6 +20,7 @@ def agent(dl, received):
     a = EbooksAgent(Config(irc=IrcConfig(nick=OUR_NICK)))
     a._plugin = make_plugin(dl)
     a._attach(a._plugin)
+    a._state = ConnectionState.READY
     return a
 
 
@@ -198,17 +200,90 @@ def test_closing_a_stream_before_reading_it_unsubscribes(agent):
 def test_status_and_status_events(agent):
     async def go():
         events = agent.events()
-        assert agent.status().connected
+        assert agent.status().state is ConnectionState.READY
         agent._plugin.connection_lost()
-        assert not agent.status().connected
+        assert agent.status().state is ConnectionState.DISCONNECTED
+        agent._plugin.on_connected()       # reconnected, joining again
         agent._plugin.on_names_end(channel="#ebooks")
-        return await collect(events, 2)
+        events = await collect(events, 3)
+        return [e.status.state for e in events], events[-1].status
 
-    down, up = asyncio.run(go())
-    assert isinstance(down, StatusChanged) and not down.status.connected
-    assert down.reason == "disconnected"
-    assert up.status.connected and up.reason == "joined"
-    assert up.status.nick == OUR_NICK and up.status.channel == "#ebooks"
+    states, last = asyncio.run(go())
+    S_ = ConnectionState
+    assert states == [S_.DISCONNECTED, S_.CONNECTING, S_.READY]
+    assert last.nick == OUR_NICK and last.channel == "#ebooks"
+
+
+def test_status_peer_is_cleared_on_disconnect(agent):
+    async def go():
+        agent._peer, agent._fingerprint = "142.44.0.1", "ab12"
+        agent._plugin.connection_lost()
+        return agent.status()
+
+    status = asyncio.run(go())
+    assert (status.peer, status.tls_fingerprint) == (None, None)
+
+
+def test_members(agent):
+    async def go():
+        agent._plugin.bot.channels["#ebooks"] = {"Search", "Bsk", OUR_NICK}
+        joined = agent.members()
+        agent._plugin.connection_lost()
+        return joined, agent.members()
+
+    joined, dropped = asyncio.run(go())
+    assert joined == {"search", "bsk", OUR_NICK.lower()}
+    assert dropped == frozenset()  # not in the channel any more
+
+
+def test_members_changes_are_gathered_into_one_event(agent, monkeypatch):
+    import agent as agent_module
+    monkeypatch.setattr(agent_module, "MEMBERS_INTERVAL", 0.05)
+
+    async def go():
+        events = agent.events()
+        for _ in range(50):  # a burst of joins and parts
+            agent._plugin.on_membership(nick="someone")
+        first = await asyncio.wait_for(anext(events), 1)
+        await asyncio.sleep(0.1)
+        agent._plugin.on_membership(nick="later")
+        second = await asyncio.wait_for(anext(events), 1)
+        return first, second, events
+
+    first, second, events = asyncio.run(go())
+    assert first == second == MembersChanged()
+
+
+def test_stop_ends_every_stream(agent):
+    async def go():
+        before = agent.events()
+        req = agent.request("!Oatmeal Dune.epub")
+        await agent.stop()
+        seen = [e async for e in before]
+        after = [e async for e in agent.events()]  # already stopped: ends at once
+        return req, seen, after
+
+    req, seen, after = asyncio.run(go())
+    assert [type(e) for e in seen] == [RequestUpdated, RequestUpdated, StatusChanged]
+    assert seen[1].request.state is S.CANCELLED
+    assert seen[-1].status.state is ConnectionState.STOPPED
+    assert after == []
+    assert agent._subscribers == set()
+
+
+def test_stop_cancels_a_pending_members_event(agent):
+    async def go():
+        agent._plugin.on_membership()
+        await agent.stop()
+        return agent._members_timer
+
+    timer = asyncio.run(go())
+    assert timer.cancelled()
+
+
+def test_wait_ready_before_start_raises():
+    with pytest.raises(RuntimeError, match="start"):
+        asyncio.run(EbooksAgent().wait_ready())
 
 
 def test_disconnect_fails_waiting_requests(agent):

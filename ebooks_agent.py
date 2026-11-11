@@ -53,27 +53,31 @@ def _parse_args(argv=None) -> argparse.Namespace:
 
 
 async def _main(config: Config):
-    # Instantiate our ebooks agent
     agent = EbooksAgent(config)
-    # Connect and join the channel before accepting any searches.
-    # Ctrl+C here still works: asyncio.run turns it into KeyboardInterrupt.
     await agent.start()
-
-    # From here on, Ctrl+C (SIGINT) and SIGTERM (e.g. `kill`) both mean
-    # "shut down cleanly": stop serving, then disconnect from IRC
-    stop = asyncio.Event()
     loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop.set)
-
     try:
-        await _serve(agent, stop)
-    finally:
-        log.info("Shutting down")
-        # A second Ctrl+C during the QUIT wait aborts it, as usual
+        # Join the channel before accepting any commands, so a bad host or
+        # nick fails at startup. Ctrl+C here still works: asyncio.run turns
+        # it into KeyboardInterrupt.
+        await agent.wait_ready(config.irc.connect_timeout)
+
+        # From here on, Ctrl+C (SIGINT) and SIGTERM (e.g. `kill`) both mean
+        # "shut down cleanly": stop serving, then disconnect from IRC
+        stop = asyncio.Event()
         for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.remove_signal_handler(sig)
+            loop.add_signal_handler(sig, stop.set)
+        try:
+            await _serve(agent, stop)
+        finally:
+            log.info("Shutting down")
+            # A second Ctrl+C during the QUIT wait aborts it, as usual
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                loop.remove_signal_handler(sig)
+    finally:
+        # Also after a failed or interrupted start, so irc3 stops retrying
         await agent.stop()
+
 
 def main(argv=None):
     # Set up before loading the config, so config warnings are shown too.

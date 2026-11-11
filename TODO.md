@@ -55,6 +55,14 @@ The groundwork for the planned TUI. [`docs/core-interface.md`](docs/core-interfa
   - The plugin reads its config once, from the bot's config. Input is checked once, in `EbooksAgent`. Offers and bot messages are matched to requests by one rule (`EbooksPlugin._match`).
   - `search.offer_timeout` is now `downloads.offer_timeout`: it applies to book requests too.
 
+- [x] **TUI-facing interface**: `core.py`, `agent.py`
+  - `AgentStatus.state` (`stopped`, `connecting`, `ready`, `disconnected`) replaces `connected` and `StatusChanged.reason`.
+  - `start()` returns at once, and `wait_ready(timeout)` waits for the join. Requests made in between wait in `PENDING`. `stop()` is final, also after a failed start: `_IrcBot` stops irc3's retries, including an attempt still in progress.
+  - After `stop()`, every `events()` stream ends.
+  - `members()` and a `MembersChanged` event (at most one per 2s) let the TUI grey out offline bots.
+  - `status()` no longer shows the last server's address and fingerprint once disconnected. Our own QUIT no longer logs a "Disconnected" warning.
+  - Tests in `tests/test_service.py` and `tests/test_shutdown.py`.
+
 ## Connection lifecycle
 
 - [x] **Report "connected" only after the JOIN is confirmed**: the plugin's public `ready` event is set on the end-of-NAMES reply (366) for our channel, so nothing is sent before we're in it and the member list is filled in.

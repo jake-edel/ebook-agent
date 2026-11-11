@@ -15,7 +15,9 @@ from config import Config
 from core import (
     AgentStatus,
     BotMessage,
+    ConnectionState,
     Event,
+    MembersChanged,
     Request,
     RequestKind,
     RequestState,
@@ -34,6 +36,10 @@ QUIT_TIMEOUT = 2.0
 # doesn't flood subscribers
 PROGRESS_INTERVAL = 0.25
 
+# Channel joins and parts are gathered into one MembersChanged per this many
+# seconds: the channel has hundreds of members coming and going
+MEMBERS_INTERVAL = 2.0
+
 # TLS is always on and isn't configurable. IRCHighway round-robins across
 # several servers, each with its own self-signed certificate, and doesn't
 # publish the list — so certificates can't be verified or pinned. We still use
@@ -43,6 +49,24 @@ PROGRESS_INTERVAL = 0.25
 
 
 class _IrcBot(irc3.IrcBot):
+    # Set by EbooksAgent.stop(). irc3 retries a failed or dropped connection
+    # with call_later() handles it doesn't keep, so they can't be cancelled:
+    # they find this flag instead.
+    stopped = False
+
+    def create_connection(self):
+        if self.stopped:
+            return self.loop
+        return super().create_connection()
+
+    def connection_made(self, f):
+        if self.stopped:
+            # An attempt that was still in progress when we stopped
+            if not f.cancelled() and f.exception() is None:
+                f.result()[0].close()
+            return
+        super().connection_made(f)
+
     def get_ssl_context(self):
         # irc3 leaves the minimum TLS version to OpenSSL's defaults, which
         # vary by system and can still allow TLS 1.0/1.1. Set it ourselves.
@@ -63,9 +87,14 @@ class EbooksAgent:
         self._ids = itertools.count(1)
         # One queue per events() stream
         self._subscribers: set[asyncio.Queue[Event]] = set()
-        # The server we last joined, for status()
+        self._state = ConnectionState.STOPPED
+        # Set once stop() begins; the agent can't be started again after it
+        self._stopped = False
+        # The server we're in, for status()
         self._peer: str | None = None
         self._fingerprint: str | None = None
+        # A MembersChanged waiting to go out (see MEMBERS_INTERVAL)
+        self._members_timer: asyncio.TimerHandle | None = None
 
     def _build_bot(self) -> irc3.IrcBot:
         # Configure our server / user settings
@@ -91,11 +120,15 @@ class EbooksAgent:
         # Add our event handlers
         # 1. Listening for a connection
         # 2. Listening for the end of the channel's member list (we're in)
-        # 3. Logging every message addressed to us
-        # 4. Listening for a DCC file send
+        # 3. Listening for people joining and leaving
+        # 4. Logging every message addressed to us
+        # 5. Listening for a DCC file send
         bot.attach_events(
             irc3.event(irc3.rfc.CONNECTED, plugin.on_connected),
             irc3.event(irc3.rfc.RPL_ENDOFNAMES, plugin.on_names_end),
+            irc3.event(irc3.rfc.JOIN_PART_QUIT, plugin.on_membership),
+            irc3.event(irc3.rfc.KICK, plugin.on_membership),
+            irc3.event(irc3.rfc.NEW_NICK, plugin.on_membership),
             irc3.event(
                 # Any PRIVMSG/NOTICE. The prefix is optional and needn't be a
                 # nick!user@host, so server notices are caught too.
@@ -114,29 +147,58 @@ class EbooksAgent:
         return bot
 
     async def start(self):
-        # Create our bot and wait before we do anything else
+        """Start connecting, and return without waiting for it (see wait_ready()).
+
+        Requests made in the meantime wait in PENDING. Can only be called once.
+        """
+        if self._bot is not None or self._stopped:
+            raise RuntimeError("An agent can only be started once")
         self._bot = self._build_bot()
         self._plugin = self._bot.get_plugin(EbooksPlugin)
         self._plugin.downloads.create_dirs()
+        self._set_state(ConnectionState.CONNECTING)
         self._bot.create_connection()
-        irc = self._config.irc
+
+    async def wait_ready(self, timeout: float | None = None):
+        """Wait until we're in the channel. Raises TimeoutError after `timeout` seconds."""
+        plugin = self._require_plugin()
         try:
-            async with asyncio.timeout(irc.connect_timeout):
-                await self._plugin.ready.wait()
+            async with asyncio.timeout(timeout):
+                await plugin.ready.wait()
         except TimeoutError:
+            irc = self._config.irc
             raise TimeoutError(
-                f"Could not connect to {irc.host}:{irc.port} within {irc.connect_timeout:g}s"
+                f"Could not connect to {irc.host}:{irc.port} within {timeout:g}s"
             ) from None
 
     def _attach(self, plugin: EbooksPlugin):
         # Turn what the plugin hears into events
         plugin.on_status = self._on_status
         plugin.on_bot_message = self._on_bot_message
+        plugin.on_members_changed = self._on_members_changed
 
-    def _on_status(self, connected: bool, reason: str):
-        if connected:
+    def _on_status(self, state: ConnectionState):
+        if self._stopped:
+            return  # e.g. the server hanging up after our QUIT
+        if state is ConnectionState.READY:
             self._read_tls()
-        self._emit(StatusChanged(self.status(), reason))
+        else:
+            self._peer = self._fingerprint = None
+        self._set_state(state)
+
+    def _set_state(self, state: ConnectionState):
+        if state is not self._state:
+            self._state = state
+            self._emit(StatusChanged(self.status()))
+
+    def _on_members_changed(self):
+        if self._members_timer is None and not self._stopped:
+            loop = asyncio.get_running_loop()
+            self._members_timer = loop.call_later(MEMBERS_INTERVAL, self._emit_members_changed)
+
+    def _emit_members_changed(self):
+        self._members_timer = None
+        self._emit(MembersChanged())
 
     def _read_tls(self):
         # Record which server we landed on and its certificate fingerprint,
@@ -159,11 +221,29 @@ class EbooksAgent:
 
     async def stop(self, timeout: float = QUIT_TIMEOUT):
         """Cancel outstanding requests, then send QUIT and wait (up to
-        `timeout`) for the server to close the connection."""
-        for r in self.requests():
-            self.cancel(r.id)
-        await asyncio.gather(*self._tasks.values(), return_exceptions=True)
+        `timeout`) for the server to close the connection. For good: every
+        events() stream ends, and the agent can't be started again."""
+        if self._stopped:
+            return
+        self._stopped = True
+        try:
+            for r in self.requests():
+                self.cancel(r.id)
+            await asyncio.gather(*self._tasks.values(), return_exceptions=True)
+            if self._members_timer:
+                self._members_timer.cancel()
+            if self._bot is not None:
+                self._bot.stopped = True  # no more (re)connecting
+                await self._quit(timeout)
+        finally:
+            self._state = ConnectionState.STOPPED
+            self._peer = self._fingerprint = None
+            self._emit(StatusChanged(self.status()))
+            for queue in self._subscribers:
+                queue.put_nowait(_END)
+            self._subscribers.clear()
 
+    async def _quit(self, timeout: float):
         protocol = getattr(self._bot, "protocol", None)
         if protocol is None or protocol.closed:
             return  # never connected, or already gone
@@ -182,8 +262,10 @@ class EbooksAgent:
             protocol.transport.close()
 
     def _require_plugin(self) -> EbooksPlugin:
+        if self._stopped:
+            raise RuntimeError("The agent has stopped")
         if self._plugin is None:
-            raise RuntimeError("Not connected — call start() first")
+            raise RuntimeError("Not started — call start() first")
         return self._plugin
 
     # --- state ------------------------------------------------------------
@@ -191,7 +273,7 @@ class EbooksAgent:
     def status(self) -> AgentStatus:
         irc = self._config.irc
         return AgentStatus(
-            connected=self._plugin is not None and self._plugin.ready.is_set(),
+            state=self._state,
             server=irc.host,
             nick=self._bot.nick if self._bot else irc.nick,
             channel=irc.channel,
@@ -202,6 +284,10 @@ class EbooksAgent:
     def requests(self) -> tuple[Request, ...]:
         """Every request this session, oldest first, finished ones included."""
         return tuple(self._requests.values())
+
+    def members(self) -> frozenset[str]:
+        """Who's in the channel, lower-cased. Empty unless READY."""
+        return self._plugin.members() if self._plugin and not self._stopped else frozenset()
 
     # --- commands ---------------------------------------------------------
     #
@@ -274,13 +360,20 @@ class EbooksAgent:
     # --- events -----------------------------------------------------------
 
     def events(self) -> AsyncIterator[Event]:
-        """A new, independent stream of events from now on. aclose() it to unsubscribe."""
-        return _EventStream(self._subscribers)
+        """A new, independent stream of events from now on. aclose() it to unsubscribe.
+
+        It ends once the agent has stopped (at once, if it already has).
+        """
+        return _EventStream(self._subscribers, ended=self._stopped)
 
     def _emit(self, event: Event):
         # Unbounded queues: events are small and progress is rate-limited
         for queue in self._subscribers:
             queue.put_nowait(event)
+
+
+# Queued by stop() to end each stream
+_END = object()
 
 
 class _EventStream:
@@ -291,16 +384,23 @@ class _EventStream:
     subscribed and filling up forever.
     """
 
-    def __init__(self, subscribers: set[asyncio.Queue[Event]]):
+    def __init__(self, subscribers: set[asyncio.Queue[Event]], ended: bool = False):
         self._subscribers = subscribers
         self._queue: asyncio.Queue[Event] = asyncio.Queue()
-        subscribers.add(self._queue)
+        if ended:
+            self._queue.put_nowait(_END)
+        else:
+            subscribers.add(self._queue)
 
     def __aiter__(self):
         return self
 
     async def __anext__(self) -> Event:
-        return await self._queue.get()
+        event = await self._queue.get()
+        if event is _END:
+            self._queue.put_nowait(_END)  # and on every later call
+            raise StopAsyncIteration
+        return event
 
     async def aclose(self):
         self._subscribers.discard(self._queue)

@@ -3,17 +3,25 @@
 import asyncio
 import time
 
+import pytest
+
 from agent import EbooksAgent
 from config import Config, IrcConfig
+from core import ConnectionState, RequestState, StatusChanged
 
 from conftest import OUR_NICK
 
 
 class FakeIrcServer:
-    """Just enough of an IRC server: welcomes us, records lines, optionally honours QUIT."""
+    """Just enough of an IRC server: welcomes us, records lines, optionally honours QUIT.
 
-    def __init__(self, close_on_quit=True):
+    With welcome=False it accepts the connection and then says nothing, like
+    a server that hangs during registration.
+    """
+
+    def __init__(self, close_on_quit=True, welcome=True):
         self.close_on_quit = close_on_quit
+        self.welcome = welcome
         self.lines = []
         self.connections = 0
         self.client_gone = asyncio.Event()
@@ -24,7 +32,7 @@ class FakeIrcServer:
         while line := await reader.readline():
             line = line.decode().rstrip("\r\n")
             self.lines.append(line)
-            if line.startswith("NICK") and not welcomed:
+            if line.startswith("NICK") and self.welcome and not welcomed:
                 # 001 welcome, then end of MOTD, which irc3 treats as "connected"
                 writer.write(f":srv 001 {OUR_NICK} :hi\r\n:srv 376 {OUR_NICK} :End\r\n".encode())
                 await writer.drain()
@@ -66,6 +74,7 @@ def test_stop_sends_quit_and_waits_for_server(dl, caplog):
     async def go():
         agent = plaintext_agent(await server.start(), dl)
         await agent.start()
+        await agent.wait_ready(2)
         # irc3 reconnects by scheduling create_connection 2s after a drop it
         # didn't expect. Record what gets scheduled rather than waiting 2s.
         loop = asyncio.get_running_loop()
@@ -100,6 +109,7 @@ def test_stop_gives_up_on_a_server_that_ignores_quit(dl, caplog):
     async def go():
         agent = plaintext_agent(await server.start(), dl)
         await agent.start()
+        await agent.wait_ready(2)
         began = time.monotonic()
         await agent.stop(timeout=0.3)
         elapsed = time.monotonic() - began
@@ -116,3 +126,86 @@ def test_stop_gives_up_on_a_server_that_ignores_quit(dl, caplog):
 
 def test_stop_before_start_is_harmless():
     asyncio.run(EbooksAgent().stop())
+
+
+def test_start_returns_at_once_and_requests_wait_for_the_join(dl):
+    server = FakeIrcServer()
+
+    async def go():
+        agent = plaintext_agent(await server.start(), dl)
+        events = agent.events()  # subscribing before start() is fine
+        await agent.start()
+        assert agent.status().state is ConnectionState.CONNECTING
+        req = agent.search("dune")  # accepted while still connecting
+        await agent.wait_ready(2)
+        await asyncio.sleep(0.05)
+        sent = [line for line in server.lines if line.startswith("PRIVMSG")]
+        await agent.stop()
+        seen = [e async for e in events]  # ends by itself after stop()
+        server.server.close()
+        return req, sent, seen, agent
+
+    req, sent, seen, agent = asyncio.run(go())
+    assert req.state is RequestState.PENDING
+    assert sent == ["PRIVMSG #ebooks :@search dune"]
+    states = [e.status.state for e in seen if isinstance(e, StatusChanged)]
+    assert states == [ConnectionState.CONNECTING, ConnectionState.READY, ConnectionState.STOPPED]
+    assert agent.requests()[0].state is RequestState.CANCELLED
+
+
+def test_failed_start_can_be_stopped_cleanly(dl):
+    # The server accepts but never welcomes us: wait_ready times out, and
+    # stop() must leave nothing connecting in the background
+    server = FakeIrcServer(welcome=False)
+
+    async def go():
+        agent = plaintext_agent(await server.start(), dl)
+        await agent.start()
+        with pytest.raises(TimeoutError, match="Could not connect"):
+            await agent.wait_ready(0.2)
+        await agent.stop(timeout=0.2)
+        await asyncio.wait_for(server.client_gone.wait(), 1)
+        # A retry irc3 had scheduled finds the agent stopped
+        agent._bot.create_connection()
+        await asyncio.sleep(0.1)
+        server.server.close()
+        return agent
+
+    agent = asyncio.run(go())
+    assert server.connections == 1
+    assert agent.status().state is ConnectionState.STOPPED
+
+
+def test_connection_attempt_finishing_after_stop_is_dropped(dl):
+    class Transport:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    async def go():
+        agent = EbooksAgent()
+        await agent.stop()  # before start() even
+        bot = agent._build_bot()
+        bot.stopped = True
+        attempt = asyncio.get_running_loop().create_future()
+        transport = Transport()
+        attempt.set_result((transport, object()))
+        bot.connection_made(attempt)
+        return bot, transport
+
+    bot, transport = asyncio.run(go())
+    assert transport.closed
+    assert getattr(bot, "protocol", None) is None
+
+
+def test_agent_cannot_be_restarted():
+    async def go():
+        agent = EbooksAgent()
+        await agent.stop()
+        with pytest.raises(RuntimeError, match="once"):
+            await agent.start()
+        with pytest.raises(RuntimeError, match="stopped"):
+            agent.search("dune")
+
+    asyncio.run(go())
