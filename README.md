@@ -83,7 +83,9 @@ Press `Ctrl+C`, or send `SIGTERM`, to disconnect and exit.
 python ebooks_tui.py
 ```
 
-For now it browses past searches in `searches/`: move with `j`/`k` (or the arrows), `Enter` or `l` to go into a search's results, `h` or `Esc` to come back, `q` to quit. It doesn't connect to IRC yet. See [`docs/tui-plan.md`](docs/tui-plan.md) for what's next.
+It connects to IRC and browses your past searches in `searches/`. Move with `j`/`k` (or the arrows), `Enter`, `l` or `→` to go into a search's results, and `h`, `←` or `Esc` to come back. Results list the epubs first, then the other formats below a divider. `Enter` on a result requests that book: the first column shows how it's going (`…` waiting, `42%`, `✓` saved, `✗` failed), and the status bar has the details. `q` quits, and asks first if a request is still in progress.
+
+The TUI serves the Unix socket too, so Neovim's `:Ebook` keeps working while it's open (its requests show up in the TUI). It can't run beside `ebooks_agent.py`. Searching from the TUI is next: see [`docs/tui-plan.md`](docs/tui-plan.md).
 
 ### The socket
 

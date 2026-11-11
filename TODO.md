@@ -4,7 +4,7 @@ Outstanding work, roughly in priority order. The backend is done: what it offers
 
 ## Next: the TUI
 
-The interactive, Neovim-inspired frontend, built in stages: see [`docs/tui-plan.md`](docs/tui-plan.md). Stage 1 (browsing past searches) is done; next is stage 2, connecting it to the agent.
+The interactive, Neovim-inspired frontend, built in stages: see [`docs/tui-plan.md`](docs/tui-plan.md). Stages 1 (browsing past searches) and 2 (requesting books) are done; next is stage 3, searching from the TUI.
 
 ## Robustness / polish
 

@@ -127,7 +127,7 @@ Built in thin slices, each one usable on its own. Using each stage decides the n
 | Stage | Scope | Status |
 |---|---|---|
 | 1 | Browse past searches from disk: searches list (newest first), results table, `j`/`k`, `Enter`/`l` in, `h`/`Esc` back, `q` quit. No IRC | done |
-| 2 | Go live: the TUI starts the agent and the socket, the status bar shows the connection, `Enter` on a result requests it, and its progress shows somewhere simple | |
+| 2 | Go live: the TUI starts the agent and the socket, the status bar shows the connection, `Enter` on a result requests it. A state column on each row (`…`, `42%`, `✓`, `✗`) and the status bar (progress, bot replies, the saved path or the error) follow it, including requests made over the socket. `q` asks first if something's in flight | done |
 | 3 | Search from the TUI: `s` opens a one-line input; the new search appears at the top and opens when its results arrive | |
 | 4 | Filter results: `/` narrows the table as you type, `Esc` clears | |
 | 5 | See what's happening: transfers (with cancel), downloads, the log. Where they live is decided by stages 2–4 | |
