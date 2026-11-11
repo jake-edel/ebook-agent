@@ -15,7 +15,13 @@ from pathlib import Path
 
 from agent import EbooksAgent
 from config import Config, ConfigError, load_config
-from unix_socket import SocketUnavailableError, UnsafeSocketPathError, socket_path, unix_socket
+from unix_socket import (
+    SocketUnavailableError,
+    UnsafeSocketPathError,
+    claim_socket_path,
+    socket_path,
+    unix_socket,
+)
 
 log = logging.getLogger(__name__)
 
@@ -53,6 +59,9 @@ def _parse_args(argv=None) -> argparse.Namespace:
 
 
 async def _main(config: Config):
+    # Before going near IRC: if another agent is running, connecting a second
+    # one (as "ebooks_cli_") would only be undone a moment later
+    path = claim_socket_path()
     agent = EbooksAgent(config)
     await agent.start()
     loop = asyncio.get_running_loop()
@@ -68,7 +77,7 @@ async def _main(config: Config):
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, stop.set)
         try:
-            await _serve(agent, stop)
+            await _serve(agent, stop, path)
         finally:
             log.info("Shutting down")
             # A second Ctrl+C during the QUIT wait aborts it, as usual

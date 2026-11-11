@@ -80,3 +80,31 @@ def test_socket_path_flag_prints_where_the_agent_listens(runtime_dir):
     )
     assert out.stdout == f"{runtime_dir / 'ebooks.sock'}\n"
     assert out.stdout.strip() == str(us.socket_path())
+
+
+def test_refuses_to_start_beside_a_running_agent(runtime_dir, monkeypatch):
+    # Checked before connecting to IRC, not after
+    connected = []
+
+    class NeverConnect:
+        def __init__(self, config):
+            connected.append(config)
+
+    monkeypatch.setattr(ebooks_agent, "EbooksAgent", NeverConnect)
+    path = runtime_dir / "ebooks.sock"
+
+    async def go():
+        first = asyncio.create_task(us.unix_socket(FakeAgent(), path))
+        for _ in range(100):
+            if path.exists():
+                break
+            await asyncio.sleep(0.01)
+        try:
+            with pytest.raises(us.SocketInUseError):
+                await ebooks_agent._main(ebooks_agent.Config())
+        finally:
+            first.cancel()
+            await asyncio.gather(first, return_exceptions=True)
+
+    asyncio.run(go())
+    assert connected == []

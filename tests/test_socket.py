@@ -157,6 +157,36 @@ def test_stale_socket_replaced(runtime_dir):
     assert not path.exists()
 
 
+def test_live_socket_not_taken_over(runtime_dir, caplog):
+    # A second agent must not steal the socket from one that's running
+    path = runtime_dir / "ebooks.sock"
+
+    async def go():
+        first = await start_server(FakeAgent(), path)
+        with pytest.raises(us.SocketInUseError, match="already running"):
+            await us.unix_socket(FakeAgent(), path)
+        with pytest.raises(us.SocketInUseError):
+            us.claim_socket_path(path)
+        # The first one still has it, and still answers
+        replies = await ask(path, {"cmd": "status"})
+        await stop_server(first)
+        return replies
+
+    caplog.set_level("INFO")
+    assert asyncio.run(go())[0]["type"] == "Status"
+    # The check's probe connection isn't treated as a bad command
+    assert "refused" not in caplog.text
+
+
+def test_claim_removes_a_dead_socket(runtime_dir):
+    path = runtime_dir / "ebooks.sock"
+    old = socket.socket(socket.AF_UNIX)
+    old.bind(str(path))  # bound but never listening, like one left by a crash
+    old.close()
+    assert us.claim_socket_path(path) == path
+    assert not path.exists()
+
+
 def test_non_socket_at_path_not_deleted(runtime_dir):
     path = runtime_dir / "ebooks.sock"
     path.write_text("important")

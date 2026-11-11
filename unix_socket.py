@@ -95,15 +95,52 @@ def socket_path() -> Path:
     return socket_dir() / SOCKET_NAME
 
 
+class SocketInUseError(SocketUnavailableError):
+    """Another agent is already serving the socket."""
+
+
+def _is_live(path: Path) -> bool:
+    """True if something accepts connections on the socket at `path`."""
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    probe.settimeout(1)
+    try:
+        probe.connect(str(path))
+    except OSError:  # refused (nobody listening), gone, or timed out
+        return False
+    else:
+        return True
+    finally:
+        probe.close()
+
+
 def _remove_stale_socket(path: Path):
-    """Remove a leftover socket from a previous run — but only if it IS a socket."""
+    """Remove a leftover socket from a previous run — but only if it IS a
+    socket, and nothing is listening on it any more."""
     try:
         st = os.lstat(path)
     except FileNotFoundError:
         return
     if not stat.S_ISSOCK(st.st_mode):
         raise UnsafeSocketPathError(f"{path} exists and is not a socket — refusing to remove it")
+    # Otherwise a second agent would silently take the socket over, leaving
+    # the first running with nothing able to reach it
+    if _is_live(path):
+        raise SocketInUseError(f"Another agent is already running (listening on {path})")
     path.unlink()
+
+
+def claim_socket_path(path: Path | None = None) -> Path:
+    """Where to serve the socket, checked to be free (a stale socket is removed).
+
+    Raises SocketInUseError if another agent is serving it, or
+    SocketUnavailableError if the location isn't safe.
+    """
+    try:
+        path = path or socket_path()
+        _remove_stale_socket(path)
+    except (UnsafeSocketPathError, OSError) as e:
+        raise SocketUnavailableError(f"Can't open Unix socket: {e}") from e
+    return path
 
 
 def _bind_private_socket(path: Path) -> socket.socket:
@@ -266,11 +303,11 @@ def _make_handler(agent, handlers: set[asyncio.Task]):
 
 async def unix_socket(agent, path: Path | None = None):
     """Serve the socket until cancelled. Raises SocketUnavailableError if it can't be opened."""
+    # Checked again here: another agent may have started since an earlier claim
+    path = claim_socket_path(path)
     try:
-        path = path or socket_path()
-        _remove_stale_socket(path)
         sock = _bind_private_socket(path)
-    except (UnsafeSocketPathError, OSError) as e:
+    except OSError as e:
         raise SocketUnavailableError(f"Can't open Unix socket: {e}") from e
 
     handlers: set[asyncio.Task] = set()

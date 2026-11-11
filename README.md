@@ -88,7 +88,7 @@ python ebooks_agent.py --socket-path
 
 It's normally `$XDG_RUNTIME_DIR/ebooks.sock`. If `XDG_RUNTIME_DIR` isn't set or isn't private (e.g. some cron or SSH sessions), it falls back to a private `/tmp/ebooks-<uid>/` directory.
 
-Only your user can use it: the socket is mode `0600` inside a directory only you can access, and connections from other users are rejected. If the socket can't be created, the agent exits with an error, since nothing could reach it.
+Only your user can use it: the socket is mode `0600` inside a directory only you can access, and connections from other users are rejected. If the socket can't be created, the agent exits with an error, since nothing could reach it. The same goes for starting a second agent while one is running: it exits before connecting to IRC, and leaves the first one's socket alone.
 
 ### Sending commands
 
