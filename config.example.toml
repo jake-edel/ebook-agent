@@ -19,10 +19,6 @@ connect_timeout = 30
 # Log messages addressed to us: DMs, bot replies, DCC offers, server notices
 show_private_messages = true
 
-[search]
-# Seconds to wait for a bot to offer the file, once a search has its turn
-offer_timeout = 60
-
 [downloads]
 # Where books are saved. Relative paths are relative to this file; ~ works.
 dir = "downloads"
@@ -32,6 +28,9 @@ searches_dir = "searches"
 max_size_mib = 100
 # Refuse a download that would leave less free disk space than this
 disk_headroom_mib = 512
+# Seconds a bot has to offer the file, from when the search or book request
+# is sent to the channel
+offer_timeout = 60
 # Seconds to wait for a bot to accept the DCC connection
 connect_timeout = 15
 # Give up on a transfer after this many seconds without data

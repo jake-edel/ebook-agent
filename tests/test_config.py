@@ -35,10 +35,10 @@ def test_example_file_matches_defaults():
 
 
 def test_file_overrides_defaults(tmp_path):
-    path = write(tmp_path, '[irc]\nnick = "file_nick"\n[search]\noffer_timeout = 90\n')
+    path = write(tmp_path, '[irc]\nnick = "file_nick"\n[downloads]\noffer_timeout = 90\n')
     cfg = load_config(path)
     assert cfg.irc.nick == "file_nick"
-    assert cfg.search.offer_timeout == 90.0
+    assert cfg.downloads.offer_timeout == 90.0
     assert cfg.irc.host == "irc.irchighway.net"  # untouched settings keep defaults
 
 
@@ -90,7 +90,7 @@ def test_invalid_toml(tmp_path):
     ('[irc]\nnick = "9lives"\n', "isn't a valid IRC nick"),
     ('[irc]\nnick = "has space"\n', "isn't a valid IRC nick"),
     ('[irc]\nchannel = "ebooks"\n', "isn't a valid channel"),
-    ('[search]\noffer_timeout = 0\n', "must be greater than 0"),
+    ('[downloads]\noffer_timeout = 0\n', "must be greater than 0"),
     ('[downloads]\nmax_size_mib = 5000\n', "max_size_mib: must be 1–4095"),
     ('[downloads]\ndisk_headroom_mib = -1\n', "can't be negative"),
     ('[downloads]\ndir = ""\n', "expected a path"),
@@ -146,7 +146,7 @@ def test_importing_dcc_creates_nothing(tmp_path):
 def test_agent_uses_config(tmp_path):
     import asyncio
     cfg = load_config(write(tmp_path, '[irc]\nnick = "cfg_nick"\nhost = "irc.example.net"\n'
-                                      'channel = "#books"\n[search]\noffer_timeout = 5\n'))
+                                      'channel = "#books"\n[downloads]\noffer_timeout = 5\n'))
 
     async def go():
         return EbooksAgent(cfg)._build_bot()

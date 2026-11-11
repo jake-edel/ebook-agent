@@ -27,6 +27,9 @@ class _Waiter:
     # The bot that must answer, or None for a search (any channel member)
     sender: str | None
     offer: asyncio.Future[DccOffer]
+    # The caller's name for this request (EbooksAgent: the request id), so
+    # bot messages can be linked to it
+    key: object = None
 
 
 def _ignore(**changes):
@@ -37,17 +40,24 @@ def _ignore(**changes):
 class EbooksPlugin:
     def __init__(self, bot):
         self.bot = bot
-        # irc3 creates the plugin, so settings can't go through __init__;
-        # EbooksAgent calls configure() with the loaded config right after
-        self.configure(Config())
+        # irc3 creates the plugin, so EbooksAgent passes the loaded config
+        # through the bot's config
+        config: Config = bot.config["ebooks_config"]
+        self.host = config.irc.host
+        self.channel = config.irc.channel
+        self.offer_timeout = config.downloads.offer_timeout
+        self.show_private_messages = config.irc.show_private_messages
+        self.downloads = Downloads(config.downloads)
         # Set once we're in the channel (end of NAMES), cleared on disconnect
         self.ready = asyncio.Event()
         # Set when the server connection drops (e.g. after our QUIT)
         self.disconnected = asyncio.Event()
         # Called with (connected, reason) when `ready` changes
         self.on_status: Callable[[bool, str], None] = lambda connected, reason: None
-        # Called with (nick, text) for each message a user sends us directly
-        self.on_bot_message: Callable[[str, str], None] = lambda nick, text: None
+        # Called with (nick, text, key) for each message a user sends us
+        # directly. `key` is that of the request the message most likely
+        # belongs to (see _match), or None.
+        self.on_bot_message: Callable[[str, str, object], None] = lambda nick, text, key: None
         # Lines sent and waiting for an offer, oldest first. Offers that match
         # none of them are dropped as unsolicited.
         self._waiters: list[_Waiter] = []
@@ -55,12 +65,6 @@ class EbooksPlugin:
         # ambiguous: searches go one at a time. Book requests name their bot
         # and don't wait for each other.
         self._search_lock = asyncio.Lock()
-
-    def configure(self, config: Config):
-        self.channel = config.irc.channel
-        self.offer_timeout = config.search.offer_timeout
-        self.show_private_messages = config.irc.show_private_messages
-        self.downloads = Downloads(config.downloads)
 
     def connection_lost(self):
         # irc3 calls this on every plugin when the connection drops
@@ -75,7 +79,7 @@ class EbooksPlugin:
         for w in self._waiters:
             if not w.offer.done():
                 w.offer.set_exception(ConnectionError("Disconnected from IRC before an offer arrived"))
-        log.warning("Disconnected from %s", self.bot.config.host)
+        log.warning("Disconnected from %s", self.host)
         self.on_status(False, "disconnected")
 
     # **kwargs - pick up and discard any additional arguments
@@ -85,7 +89,7 @@ class EbooksPlugin:
         # Once connected, join the #ebooks channel. We're ready once the
         # server has sent the member list (on_names_end).
         self.bot.join(self.channel)
-        log.info("Connected to %s, joining %s", self.bot.config.host, self.channel)
+        log.info("Connected to %s, joining %s", self.host, self.channel)
 
     def on_names_end(self, channel=None, **kwargs):
         # End of NAMES (366) for our channel: we're in, and the member list the
@@ -112,7 +116,8 @@ class EbooksPlugin:
         # Pass on what users (not the server) tell us, except CTCP like DCC offers
         nick = getattr(mask, "nick", None)
         if nick and text and not text.startswith("\x01"):
-            self.on_bot_message(nick, text)
+            waiter = self._match(nick)
+            self.on_bot_message(nick, text, waiter.key if waiter else None)
 
     def on_dcc_send(self, mask=None, target=None, text=None, **kwargs):
         sender = getattr(mask, "nick", None) or str(mask).split("!", 1)[0]
@@ -158,25 +163,28 @@ class EbooksPlugin:
         waiter.offer.set_result(offer)
 
     def _match(self, sender: str) -> _Waiter | None:
+        """Who an offer or message from `sender` is for: the oldest request
+        naming that bot (bots serve requests in order), else the search in
+        flight, which any channel member may answer."""
         open_ = [w for w in self._waiters if not w.offer.done()]
         for w in open_:
             if w.sender and w.sender.lower() == sender.lower():
                 return w
         return next((w for w in open_ if w.sender is None), None)
 
-    async def search(self, query: str, update=_ignore) -> Path:
+    async def search(self, query: str, update=_ignore, key=None) -> Path:
         """Send `@search <query>` and save the results file to the searches dir.
 
         The file is named "<timestamp> <query>.txt", without the "@search "
-        prefix, so past searches sort by date. Raises ValueError for an
-        empty query or one containing line breaks.
+        prefix, so past searches sort by date. `query` must have passed
+        check_query.
 
         `update(**changes)` is called with Request fields as the work
-        progresses (state, filename, size, received).
+        progresses (state, filename, size, received). `key` is passed back
+        with bot messages that belong to this search.
         """
-        query = check_query(query)
         async with self._search_lock:
-            offer = await self._fetch(f"@search {query}", None, update)
+            offer = await self._fetch(f"@search {query}", None, update, key)
         # Results arrive zipped ("SearchBot_results_for_ dune.txt.zip") or,
         # occasionally, as a bare .txt. Either way they end up as
         # "<timestamp> <query>.txt" in the searches dir.
@@ -184,33 +192,32 @@ class EbooksPlugin:
         dl = self.downloads
         if _is_zip(offer.filename):
             path = await self._receive(offer, dl.safe_path(offer.filename, dl.searches_dir), update)
-            path = dl.extract(path, name)
+            path = await asyncio.to_thread(dl.extract, path, name)
             log.info("Extracted: %s", path)
         else:
             suffix = Path(offer.filename).suffix.lower() or ".txt"
             path = await self._receive(offer, dl.safe_path(f"{name}{suffix}", dl.searches_dir), update)
         return path
 
-    async def request(self, line: str, update=_ignore) -> Path:
+    async def request(self, line: str, bot: str, update=_ignore, key=None) -> Path:
         """Send a `!Bot <file>` line and save the book to the downloads dir.
 
-        Only an offer from that bot is accepted. The book keeps the name the
-        bot gave it (sanitized), or its name inside the zip if it came zipped.
-        Raises ValueError if `line` isn't of the form "!<bot> <something>".
+        `line` and `bot` come from check_request. Only an offer from that bot
+        is accepted. The book keeps the name the bot gave it (sanitized), or
+        its name inside the zip if it came zipped.
         """
-        line, bot = check_request(line)
-        offer = await self._fetch(line, bot, update)
+        offer = await self._fetch(line, bot, update, key)
         path = await self._receive(offer, self.downloads.safe_path(offer.filename), update)
-        if _is_zip(path.name):
-            path = self.downloads.extract(path)
+        if _is_zip(offer.filename):
+            path = await asyncio.to_thread(self.downloads.extract, path)
             log.info("Extracted: %s", path)
         return path
 
-    async def _fetch(self, line: str, sender: str | None, update) -> DccOffer:
+    async def _fetch(self, line: str, sender: str | None, update, key) -> DccOffer:
         """Send `line` to the channel and wait for a vetted offer from `sender`."""
         # Not connected (yet, or any more)? Wait for the reconnect
         await self.ready.wait()
-        waiter = _Waiter(sender, asyncio.get_running_loop().create_future())
+        waiter = _Waiter(sender, asyncio.get_running_loop().create_future(), key)
         self._waiters.append(waiter)
         try:
             # Send our message to the server

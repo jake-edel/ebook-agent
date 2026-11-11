@@ -9,7 +9,7 @@ import pytest
 from irc3.utils import IrcString
 
 import plugin
-from config import DownloadsConfig, IrcConfig
+from config import Config, DownloadsConfig, IrcConfig
 from dcc import Downloads
 
 # A real public address (example.com). Offers must point at public IPs, but
@@ -93,7 +93,7 @@ class FakeBot:
 
     def __init__(self, members=("Search", "Oatmeal")):
         self.nick = OUR_NICK
-        self.config = types.SimpleNamespace(host="irc.example.net")
+        self.config = {"host": "irc.example.net", "ebooks_config": Config()}
         self.channels = {IrcConfig().channel: set(members) | {OUR_NICK}}
         self.sent = []
 

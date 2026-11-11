@@ -51,9 +51,9 @@ PENDING ──▶ WAITING ──▶ TRANSFERRING ──▶ DONE
 
 | Event | When |
 |---|---|
-| `StatusChanged` | connected, joined, disconnected, reconnecting |
+| `StatusChanged` | joined the channel, or disconnected (`reason` says which) |
 | `RequestUpdated` | any change to a request, including progress (at most 4 a second per transfer) |
-| `BotMessage` | a NOTICE or PRIVMSG sent to us by another user, linked to the oldest open request naming that bot, else to the search in flight |
+| `BotMessage` | a NOTICE or PRIVMSG sent to us by another user, linked by the same rule as offers: the oldest request waiting on that bot, else the search waiting for its offer |
 
 This deliberately replaces the plan's longer list (`OfferAccepted`, `Progress`, `Completed`, `Failed`, …) with one `RequestUpdated` that carries the whole snapshot. Frontends re-render the row instead of reconstructing state from deltas, and a client that missed events can call `requests()` to catch up.
 

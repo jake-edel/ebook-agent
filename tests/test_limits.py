@@ -65,7 +65,7 @@ def test_zip_bomb_refused_from_header(downloads, make_zip, small_limit):
     assert zp.stat().st_size < 100_000
     with pytest.raises(FileTooLargeError):
         small_limit.extract(zp, "bomb")
-    assert not (downloads / "bomb.epub").exists()
+    assert list(downloads.iterdir()) == []
 
 
 def test_zip_with_lying_size_header_is_contained(downloads, make_zip, small_limit):
@@ -98,3 +98,24 @@ def test_zip_prefers_ebook_extension(dl, downloads):
     out = dl.extract(zp, "multi")
     assert out.suffix == ".epub"
     assert out.read_bytes() == b"the book"
+
+
+def test_zip_with_other_files_is_kept(dl, downloads, caplog):
+    # Only one file is extracted, so deleting the zip would lose the rest
+    zp = downloads / "both.zip"
+    with zipfile.ZipFile(zp, "w") as z:
+        z.writestr("Dune.epub", b"epub")
+        z.writestr("Dune.mobi", b"mobi")
+    out = dl.extract(zp)
+    assert out == downloads / "Dune.epub"
+    assert zp.exists()
+    assert "1 other file(s)" in caplog.text
+
+
+def test_directories_in_a_zip_are_not_other_files(dl, downloads):
+    zp = downloads / "nested.zip"
+    with zipfile.ZipFile(zp, "w") as z:
+        z.writestr("Dune/", b"")
+        z.writestr("Dune/Dune.epub", b"epub")
+    assert dl.extract(zp) == downloads / "Dune.epub"
+    assert not zp.exists()

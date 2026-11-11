@@ -39,12 +39,6 @@ class IrcConfig:
 
 
 @dataclass(frozen=True)
-class SearchConfig:
-    # Seconds to wait for a bot to make a DCC offer once a search has its turn
-    offer_timeout: float = 60.0
-
-
-@dataclass(frozen=True)
 class DownloadsConfig:
     # Where books are saved
     dir: Path = PROJECT_DIR / "downloads"
@@ -54,6 +48,9 @@ class DownloadsConfig:
     max_size_mib: int = 100
     # Free disk space that must remain after a download
     disk_headroom_mib: int = 512
+    # Seconds a bot has to make its DCC offer, from when the search or book
+    # request is sent to the channel
+    offer_timeout: float = 60.0
     # Seconds to wait for a DCC sender to accept our connection
     connect_timeout: float = 15.0
     # Give up on a transfer after this many seconds without data
@@ -71,7 +68,6 @@ class DownloadsConfig:
 @dataclass(frozen=True)
 class Config:
     irc: IrcConfig = field(default_factory=IrcConfig)
-    search: SearchConfig = field(default_factory=SearchConfig)
     downloads: DownloadsConfig = field(default_factory=DownloadsConfig)
 
 
@@ -212,7 +208,7 @@ def _validate(cfg: Config):
 
     for name, value in [
         ("irc.connect_timeout", irc.connect_timeout),
-        ("search.offer_timeout", cfg.search.offer_timeout),
+        ("downloads.offer_timeout", dl.offer_timeout),
         ("downloads.connect_timeout", dl.connect_timeout),
         ("downloads.stall_timeout", dl.stall_timeout),
     ]:

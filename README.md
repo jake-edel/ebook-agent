@@ -1,6 +1,6 @@
 # ebooks-agent
 
-A Python agent that connects to IRCHighway's `#ebooks` channel, sends a search term, receives the result via DCC file transfer, and saves the ebook to disk.
+A Python agent for IRCHighway's `#ebooks` channel. It sends `@search` queries and saves the results file, then requests the books you pick from it (`!Bot …` lines), receiving each over DCC and saving it to disk. Other programs drive it over a Unix socket.
 ## Requirements
 
 - Python 3.11+
@@ -150,23 +150,24 @@ The tests never touch the network or your real `downloads/` and `searches/` fold
 3. Waits for a `DCC SEND` offer from a channel bot (up to 60 seconds). For a `!Bot` request, only that bot may answer
 4. Opens a direct TCP connection to the bot and streams the file into a temporary `.part` file, in `searches/` for results and `downloads/` for books
 5. Once every byte has arrived, gives the file its real name. If that name is taken, it uses `Dune (1).epub` and so on rather than overwriting anything
-6. If the file is a `.zip`, extracts the ebook the same way and removes the archive
+6. If the file is a `.zip`, extracts the ebook the same way and removes the archive. If the zip holds other files too, only the best ebook is extracted and the zip is kept, so nothing is lost. A zip that can't be extracted is deleted and the request fails
 7. Reports the local file path
 
 ## Project structure
 
 ```
 ebooks_agent.py   — entry point: flags, startup, runs until Ctrl+C
-config.py         — loads and validates settings (defaults, config.toml, env, flags)
+config.py         — loads and validates settings (defaults, overridden by config.toml)
 config.example.toml — documented template for config.toml
-agent.py          — EbooksAgent class, owns the IRC connection lifecycle
+core.py           — the core interface: requests, events and status, shared by every frontend
+agent.py          — EbooksAgent class, owns the IRC connection and implements the core interface
 plugin.py         — irc3 plugin, handles IRC events and DCC offers
 unix_socket.py    — Unix socket server (JSON lines), the agent's input
 dcc.py            — DCC file transfer and zip extraction
 results.py        — parser for SearchBot result files
 downloads/        — where books are saved
 searches/         — where search results files are saved
-tests/            — pytest suite (paths, offers, plugin gating, size limits, socket)
+tests/            — pytest suite
 TODO.md           — outstanding work and accepted risks
 docs/tui-plan.md  — design and phases for the planned TUI
 ```

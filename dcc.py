@@ -3,6 +3,7 @@
 import asyncio
 import errno
 import ipaddress
+import logging
 import os
 import re
 import secrets
@@ -15,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from config import DownloadsConfig
+
+log = logging.getLogger(__name__)
 
 # Characters that are unsafe or troublesome in filenames: path separators,
 # Windows-reserved punctuation, and ASCII control chars (incl. NUL)
@@ -100,14 +103,17 @@ def _finalize(part: Path, dest: Path) -> Path:
         return candidate
     raise DownloadError(f"No free filename for {dest.name} in {dest.parent}")
 
-# Handles both quoted filenames (with spaces) and bare unquoted filenames.
-# Some bots wrap filenames in quotes: DCC SEND "my file.epub" ip port size
-# Others skip them:                   DCC SEND myfile.epub ip port size
-# The \x01 CTCP delimiter is also optional — not all bots include it.
-# Anchored to the start of the message so ordinary chat that merely
-# *mentions* "DCC SEND" somewhere isn't treated as an offer.
+# DCC SEND <filename> <ip> <port> <size>, where:
+# - the filename may be quoted ("my file.epub") or bare, and some bots send
+#   bare names with spaces in them. The three numeric fields are anchored to
+#   the end of the line, so everything before them is the name.
+# - the IP is normally one 32-bit integer, but some clients send a dotted quad.
+# - the \x01 CTCP delimiters are optional: not all bots include them.
+# Anchored to the start too, so ordinary chat that merely *mentions*
+# "DCC SEND" isn't treated as an offer.
 DCC_SEND_RE = re.compile(
-    r'^\x01?DCC SEND (?:"(?P<quoted>[^"]+)"|(?P<bare>\S+)) (?P<ip>\d+) (?P<port>\d+) (?P<filesize>\d+)'
+    r'^\x01?DCC SEND (?:"(?P<quoted>[^"]+)"|(?P<bare>.+)) '
+    r'(?P<ip>\d+\.\d+\.\d+\.\d+|\d+) (?P<port>\d+) (?P<filesize>\d+)\x01?\s*$'
 )
 
 # Ports below 1024 are privileged service ports (ssh, http, smtp, ...).
@@ -133,10 +139,13 @@ def parse_dcc_offer(text: str, max_bytes: int) -> DccOffer | None:
     """Parse and validate a DCC SEND offer.
 
     Returns None if the text isn't a DCC SEND at all, raises InvalidOfferError
-    if it is one but fails validation, otherwise returns the offer.
+    if it is one but is malformed or fails validation, otherwise returns the offer.
     """
     m = DCC_SEND_RE.match(text)
     if not m:
+        if text.lstrip("\x01").startswith("DCC SEND "):
+            # Say so, rather than leave the request to time out
+            raise InvalidOfferError(f"Couldn't parse DCC offer: {text.strip(chr(1))!r}")
         return None
 
     # Unpack the named groups — quoted handles filenames with spaces,
@@ -145,9 +154,10 @@ def parse_dcc_offer(text: str, max_bytes: int) -> DccOffer | None:
     port = int(m.group("port"))
     filesize = int(m.group("filesize"))
 
-    # DCC encodes the IPv4 address as a single 32-bit integer
+    # Normally a single 32-bit integer, sometimes a dotted quad
+    ip = m.group("ip")
     try:
-        addr = ipaddress.IPv4Address(int(m.group("ip")))
+        addr = ipaddress.IPv4Address(int(ip) if ip.isdigit() else ip)
     except ipaddress.AddressValueError:
         raise InvalidOfferError(f"Invalid IP in DCC offer: {m.group('ip')}")
 
@@ -338,27 +348,37 @@ class Downloads:
             )
 
     def extract(self, zip_path: Path, name: str | None = None) -> Path:
-        """Extract the best ebook candidate from a zip, delete the zip, return the ebook's path.
+        """Extract the best ebook candidate from a zip and return the ebook's path.
 
         The file is extracted next to the zip. It's named `name` plus the member's
         extension, or, if `name` is None, after the member itself (its base name
         only, sanitized). Like receive(), never overwrites an existing file.
-        Raises BadArchiveError if the zip can't be read.
+
+        The zip is then deleted, unless it holds other files too: only one is
+        extracted, so the zip is kept rather than lose the rest. A zip that
+        can't be used is deleted, and raises BadArchiveError if it can't be
+        read, or FileTooLargeError.
         """
         # Most ebooks come uncompressed directly over DCC. This handles the minority
         # of bots that bundle files in a zip — flexible, but rarely needed in practice.
         try:
-            out_path = self._extract(zip_path, name)
-        except _ZIP_ERRORS as e:
-            raise BadArchiveError(f"Could not extract {zip_path.name}: {e}") from e
+            out_path, others = self._extract(zip_path, name)
+        except Exception as e:
+            # Nothing usable came out of it, so don't leave it lying around
+            zip_path.unlink(missing_ok=True)
+            if isinstance(e, _ZIP_ERRORS):
+                raise BadArchiveError(f"Could not extract {zip_path.name}: {e}") from e
+            raise
 
-        # Let go of the zip now that we've extracted what we need
-        zip_path.unlink()
-
-        # Let the calling function know where the file is
+        if others:
+            log.warning("Extracted %s; %s holds %d other file(s), so it was kept",
+                        out_path.name, zip_path, others)
+        else:
+            zip_path.unlink()
         return out_path
 
-    def _extract(self, zip_path: Path, name: str | None) -> Path:
+    def _extract(self, zip_path: Path, name: str | None) -> tuple[Path, int]:
+        """Extract the best candidate; returns its path and how many other files the zip holds."""
         with zipfile.ZipFile(zip_path) as file:
             # Get all members, skipping any directories
             members = [m for m in file.infolist() if not m.is_dir()]
@@ -412,7 +432,7 @@ class Downloads:
                         out.write(chunk)
                 final = _finalize(part, dest)
                 part = None
-                return final
+                return final, len(members) - 1
             finally:
                 if part is not None:
                     part.unlink(missing_ok=True)

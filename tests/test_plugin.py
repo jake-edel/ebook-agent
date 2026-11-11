@@ -16,7 +16,7 @@ MAX_DOWNLOAD_BYTES = Config().downloads.max_size_bytes
 
 def command(p, line):
     """"!Bot ..." is a book request; anything else is a search query."""
-    return p.request(line) if line.startswith("!") else p.search(line)
+    return p.request(*plugin.check_request(line)) if line.startswith("!") else p.search(line)
 
 
 async def search_with(p, term, deliveries, wait=0.3):
@@ -113,7 +113,7 @@ def offer_from(p, nick, name, port=5000):
 def test_offer_goes_to_the_request_naming_that_bot(ebooks_plugin, received):
     async def go():
         search = asyncio.create_task(ebooks_plugin.search("one"))
-        book = asyncio.create_task(ebooks_plugin.request("!Oatmeal two.epub"))
+        book = asyncio.create_task(ebooks_plugin.request("!Oatmeal two.epub", "Oatmeal"))
         await asyncio.sleep(0.01)
         # Oatmeal's offer goes to the request naming it, even though the
         # search is also open and was sent first
@@ -128,9 +128,9 @@ def test_offer_goes_to_the_request_naming_that_bot(ebooks_plugin, received):
 
 def test_requests_to_one_bot_are_matched_in_order(ebooks_plugin, received):
     async def go():
-        a = asyncio.create_task(ebooks_plugin.request("!Oatmeal a.epub"))
+        a = asyncio.create_task(ebooks_plugin.request("!Oatmeal a.epub", "Oatmeal"))
         await asyncio.sleep(0.01)
-        b = asyncio.create_task(ebooks_plugin.request("!Oatmeal b.epub"))
+        b = asyncio.create_task(ebooks_plugin.request("!Oatmeal b.epub", "Oatmeal"))
         await asyncio.sleep(0.01)
         offer_from(ebooks_plugin, "Oatmeal", "first.epub", port=5001)
         offer_from(ebooks_plugin, "Oatmeal", "second.epub", port=5002)
@@ -144,8 +144,8 @@ def test_requests_to_different_bots_run_in_parallel(dl, received):
     p = make_plugin(dl, FakeBot(members=("Search", "Oatmeal", "Bsk")))
 
     async def go():
-        slow = asyncio.create_task(p.request("!Oatmeal slow.epub"))
-        fast = asyncio.create_task(p.request("!Bsk fast.epub"))
+        slow = asyncio.create_task(p.request("!Oatmeal slow.epub", "Oatmeal"))
+        fast = asyncio.create_task(p.request("!Bsk fast.epub", "Bsk"))
         await asyncio.sleep(0.01)
         # Both lines went out at once; Bsk answers while Oatmeal is silent
         assert [line for _, line in p.bot.sent] == ["!Oatmeal slow.epub", "!Bsk fast.epub"]
@@ -190,7 +190,7 @@ def test_nothing_sent_until_ready(ebooks_plugin, received):
 
 def test_disconnect_fails_requests_waiting_for_an_offer(ebooks_plugin, received):
     async def go():
-        task = asyncio.create_task(ebooks_plugin.request("!Oatmeal Dune.epub"))
+        task = asyncio.create_task(ebooks_plugin.request("!Oatmeal Dune.epub", "Oatmeal"))
         await asyncio.sleep(0.01)
         ebooks_plugin.connection_lost()
         with pytest.raises(ConnectionError):
@@ -217,6 +217,7 @@ def test_ready_only_for_our_channel(ebooks_plugin):
 @pytest.mark.parametrize("text, error", [
     (offer_text(size=MAX_DOWNLOAD_BYTES * 5), FileTooLargeError),
     (offer_text(ip="127.0.0.1"), InvalidOfferError),
+    ("\x01DCC SEND garbled\x01", InvalidOfferError),
 ])
 def test_bad_offer_from_eligible_sender_fails_search_immediately(ebooks_plugin, received, text, error):
     with pytest.raises(error):
@@ -307,7 +308,28 @@ def test_show_private_messages(ebooks_plugin, caplog, show, logged):
 def test_hidden_private_messages_still_passed_on(ebooks_plugin):
     ebooks_plugin.show_private_messages = False
     got = []
-    ebooks_plugin.on_bot_message = lambda nick, text: got.append((nick, text))
+    ebooks_plugin.on_bot_message = lambda nick, text, key: got.append((nick, text, key))
     ebooks_plugin.on_message(mask=mask("Search"), command="NOTICE",
                              target=OUR_NICK, text="hello there")
-    assert got == [("Search", "hello there")]
+    assert got == [("Search", "hello there", None)]
+
+
+def test_bot_messages_get_the_key_of_the_request_offers_would_go_to(ebooks_plugin):
+    got = []
+    ebooks_plugin.on_bot_message = lambda nick, text, key: got.append((nick, key))
+
+    async def go():
+        search = asyncio.create_task(ebooks_plugin.search("dune", key="s"))
+        book = asyncio.create_task(ebooks_plugin.request("!Oatmeal Dune.epub", "Oatmeal", key="b"))
+        await asyncio.sleep(0.01)
+        for nick in ("Oatmeal", "OATMEAL", "Search", "Mallory"):
+            ebooks_plugin.on_message(mask=mask(nick), command="NOTICE", target=OUR_NICK, text="hi")
+        # Once Oatmeal's offer is in, its messages no longer belong to that request
+        offer_from(ebooks_plugin, "Oatmeal", "Dune.epub")
+        await asyncio.wait_for(book, 1)
+        ebooks_plugin.on_message(mask=mask("Oatmeal"), command="NOTICE", target=OUR_NICK, text="hi")
+        search.cancel()
+
+    run(go())
+    assert got == [("Oatmeal", "b"), ("OATMEAL", "b"), ("Search", "s"), ("Mallory", "s"),
+                   ("Oatmeal", "s")]

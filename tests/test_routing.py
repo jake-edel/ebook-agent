@@ -93,7 +93,7 @@ def test_repeated_search_gets_its_own_file(dl, serve, searches, monkeypatch):
 
 def test_request_sends_line_and_saves_book_to_downloads(dl, serve, searches, downloads):
     p, path = asyncio.run(run_command(
-        dl, lambda p: p.request("!Oatmeal Dune.epub"), "Oatmeal", "Frank Herbert - Dune.epub"))
+        dl, lambda p: p.request("!Oatmeal Dune.epub", "Oatmeal"), "Oatmeal", "Frank Herbert - Dune.epub"))
 
     assert p.bot.sent == [("#ebooks", "!Oatmeal Dune.epub")]
     assert path == downloads / "Frank Herbert - Dune.epub"
@@ -103,7 +103,7 @@ def test_request_sends_line_and_saves_book_to_downloads(dl, serve, searches, dow
 def test_zipped_book_keeps_its_name_inside_the_zip(dl, serve, downloads):
     serve.payload = zip_bytes("inner/Frank Herbert - Dune.epub", b"book")
     _, path = asyncio.run(run_command(
-        dl, lambda p: p.request("!Oatmeal Dune.epub"), "Oatmeal", "Dune.zip"))
+        dl, lambda p: p.request("!Oatmeal Dune.epub", "Oatmeal"), "Oatmeal", "Dune.zip"))
     # Not named after the "!Oatmeal ..." line any more, and no directories from the zip
     assert path == downloads / "Frank Herbert - Dune.epub"
     assert path.read_bytes() == b"book"
@@ -112,28 +112,31 @@ def test_zipped_book_keeps_its_name_inside_the_zip(dl, serve, downloads):
 
 # --- input checks -----------------------------------------------------------
 
-@pytest.mark.parametrize("call", [
-    lambda p: p.search(""),
-    lambda p: p.search("   "),
-    lambda p: p.search("dune\r\nPRIVMSG NickServ :hi"),
-    lambda p: p.request("Dune.epub"),       # no !Bot
-    lambda p: p.request("!Oatmeal"),        # no file
-    lambda p: p.request("!Oatmeal Dune.epub\nQUIT"),
+@pytest.mark.parametrize("check, text", [
+    (plugin.check_query, ""),
+    (plugin.check_query, "   "),
+    (plugin.check_query, "dune\r\nPRIVMSG NickServ :hi"),
+    (plugin.check_query, "dune\x00"),
+    (plugin.check_request, "Dune.epub"),       # no !Bot
+    (plugin.check_request, "!Oatmeal"),        # no file
+    (plugin.check_request, "!Oatmeal Dune.epub\nQUIT"),
 ])
-def test_bad_input_rejected_before_sending(dl, call, serve):
-    p = make_plugin(dl)
+def test_bad_input_rejected(check, text):
+    # EbooksAgent runs these before anything is sent (see test_service.py)
     with pytest.raises(ValueError):
-        asyncio.run(call(p))
-    assert p.bot.sent == []
+        check(text)
 
 
-def test_lines_too_long_for_irc_rejected(dl, serve):
-    p = make_plugin(dl)
+def test_checks_return_clean_values():
+    assert plugin.check_query("  dune  ") == "dune"
+    assert plugin.check_request(" !Oatmeal Dune.epub ") == ("!Oatmeal Dune.epub", "Oatmeal")
+
+
+def test_lines_too_long_for_irc_rejected():
     with pytest.raises(ValueError, match="too long"):
-        asyncio.run(p.search("x" * plugin.MAX_LINE_BYTES))  # the "@search " pushes it over
+        plugin.check_query("x" * plugin.MAX_LINE_BYTES)  # the "@search " pushes it over
     with pytest.raises(ValueError, match="too long"):
         plugin.check_request("!Bsk " + "é" * (plugin.MAX_LINE_BYTES // 2))  # bytes, not chars
-    assert p.bot.sent == []
     # Right at the limit is fine
     assert plugin.check_query("x" * (plugin.MAX_LINE_BYTES - len("@search ")))
     line = "!Bsk " + "x" * (plugin.MAX_LINE_BYTES - 5)

@@ -31,7 +31,7 @@ The groundwork for the planned TUI. [`docs/core-interface.md`](docs/core-interfa
 - [x] **0.5 Track requests per bot instead of one global lock**: `plugin.py`
   - A list of lines waiting for an offer replaces the single pending slot. An offer goes to the oldest open request naming its sender (bots serve requests in order), otherwise to the search in flight, otherwise it's dropped as unsolicited.
   - Book requests to different bots run in parallel. Searches still go one at a time, because any channel member can answer one.
-  - Each request keeps the plain offer timeout (`search.offer_timeout`, 60s), counted from when its line is sent. Queue detection and restarting the timer on bot messages were dropped: queues have only ever lasted a few seconds.
+  - Each request keeps the plain offer timeout (`downloads.offer_timeout`, 60s), counted from when its line is sent. Queue detection and restarting the timer on bot messages were dropped: queues have only ever lasted a few seconds.
   - The existing per-offer checks are unchanged.
 
 - [x] **0.6 All output through logging**
@@ -47,6 +47,14 @@ The groundwork for the planned TUI. [`docs/core-interface.md`](docs/core-interfa
   - Fixed along the way: closing an `events()` stream before reading from it left it subscribed.
   - Tests in `tests/test_socket.py` and `tests/test_main.py`.
 
+- [x] **Backend cleanup before the TUI**
+  - TLS 1.2 is the minimum, set in our code (`_IrcBot`) rather than left to the system's OpenSSL defaults.
+  - A zip that can't be extracted is deleted, and one holding several files is kept (only the best ebook is extracted).
+  - Extraction runs in a thread, so a large zip doesn't stall IRC or a UI.
+  - DCC offers: bare filenames with spaces and dotted-quad IPs are accepted. A malformed `DCC SEND` from the bot we're waiting on fails the request with the reason instead of timing out.
+  - The plugin reads its config once, from the bot's config. Input is checked once, in `EbooksAgent`. Offers and bot messages are matched to requests by one rule (`EbooksPlugin._match`).
+  - `search.offer_timeout` is now `downloads.offer_timeout`: it applies to book requests too.
+
 ## Connection lifecycle
 
 - [x] **Report "connected" only after the JOIN is confirmed**: the plugin's public `ready` event is set on the end-of-NAMES reply (366) for our channel, so nothing is sent before we're in it and the member list is filled in.
@@ -59,7 +67,7 @@ The groundwork for the planned TUI. [`docs/core-interface.md`](docs/core-interfa
   - **Fix:** pin known-good versions (`irc3==1.1.12` at the time of writing), or add a lock file.
 
 - [ ] **irc3 will break on Python 3.16**
-  - **Problem:** irc3 1.1.12 calls `asyncio.iscoroutinefunction` (in `irc3/dec.py` and `irc3/utils.py`), deprecated since Python 3.14 (we're on 3.14.8) and removed in 3.16. The warning is currently hidden in `pytest.ini`.
+  - **Problem:** irc3 1.1.12 calls `asyncio.iscoroutinefunction` (in `irc3/dec.py` and `irc3/utils.py`), deprecated since Python 3.14 and removed in 3.16 (the venv is on 3.13.5 at the time of writing). The warning is currently hidden in `pytest.ini`.
   - **Fix:** watch for an irc3 release that fixes it, or patch it locally, before upgrading Python.
 
 - [ ] **CI**
@@ -79,7 +87,7 @@ These were decided on purpose. Revisit them if the threat model changes.
 - **The IRC TLS connection isn't verified.** IRCHighway round-robins across 5 or more servers, each with its own self-signed cert, and doesn't publish the list, so pinning would break at random. TLS still protects against passive observers, and each connection logs the server IP and cert fingerprint.
 - **DCC transfers are plaintext.** That's how the protocol works. An active attacker on your network could tamper with downloads no matter how the IRC connection is protected.
 - **The sender check is "any member of `#ebooks`".** During your search window, any of the roughly 600 channel members can make an offer (to a public IP only, within the size limits).
-  - Searches starting with `!Bot` are already strict: only that bot is accepted.
+  - Book requests (`!Bot …`) are already strict: only that bot is accepted.
   - Could tighten further to voiced/op users (`+v`/`@`), or a list of known search bots.
 - **The download size limit is 100 MiB** (`downloads.max_size_mib` in the config). Raise it if large illustrated PDFs get refused.
 - **Downloaded files aren't checked.** A file named `.epub` could contain anything. Open downloads with appropriate care.
@@ -87,7 +95,7 @@ These were decided on purpose. Revisit them if the threat model changes.
 ## Done
 
 - [x] **Path traversal:** filenames from bots are cleaned up, kept inside `downloads/` or `searches/`, and symlinks are never followed (`O_NOFOLLOW`).
-- [x] **Offer filtering:** offers must be sent directly to our nick, arrive during an active search, come from a channel member (or the bot named in `!Bot`), and point at a public IP on port 1024 or above. Stale offers are no longer queued. Also fixed the `:Search` leading-colon bug in the event pattern.
+- [x] **Offer filtering:** offers must be sent directly to our nick, arrive while we're waiting on that sender, come from a channel member (or the bot named in `!Bot`), and point at a public IP on port 1024 or above. Stale offers are no longer queued. Also fixed the `:Search` leading-colon bug in the event pattern.
 - [x] **No interactive prompt:** the `search>` prompt is gone. `ebooks_agent.py` runs in the foreground, logs requests and results, takes searches only over the Unix socket, and exits cleanly on Ctrl+C or SIGTERM. It no longer needs stdin, so it runs fine under `nohup`, systemd or `< /dev/null`. If the socket can't be opened, startup fails instead of leaving an agent nothing can reach. Tests in `tests/test_main.py`.
 - [x] **Configuration:** `config.py` loads the built-in defaults, overridden by `config.toml` (or the file given with `--config`). Unknown keys, wrong types and out-of-range values stop startup with a clear message. `config.example.toml` is the committed, documented template, and `config.toml` is gitignored. The loaded `Config` is the only copy of each setting at runtime: `dcc.Downloads` and the plugin are handed their settings, with no module-level globals. Tests in `tests/test_config.py`.
 - [x] **No module-import side effects:** `dcc.py` no longer creates `downloads/` on import. `Downloads.create_dirs()` creates it at startup.

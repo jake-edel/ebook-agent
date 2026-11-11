@@ -98,7 +98,7 @@ class AgentStatus:
 
 @dataclass(frozen=True)
 class StatusChanged:
-    """Connection state changed: connected, joined, disconnected, reconnecting."""
+    """Connection state changed. `reason` is "joined" (we're in the channel) or "disconnected"."""
     status: AgentStatus
     reason: str | None = None
 
@@ -118,8 +118,9 @@ class BotMessage:
     """A NOTICE or PRIVMSG sent to us directly by another user (usually a bot).
 
     e.g. "Searching for dune...", "File not found". `request_id` links it to
-    the request it most likely belongs to: the oldest open request naming that
-    bot, else the search in flight, else None.
+    the request it most likely belongs to, by the rule offers are matched by:
+    the oldest request waiting on that bot, else the search waiting for its
+    offer, else None.
     """
     nick: str
     text: str
@@ -132,7 +133,7 @@ Event = StatusChanged | RequestUpdated | BotMessage
 # --- the interface ----------------------------------------------------------
 
 class AgentService(Protocol):
-    """What frontends program against. EbooksAgent will implement this."""
+    """What frontends program against. EbooksAgent implements it."""
 
     async def start(self) -> None:
         """Connect and join the channel. Raises TimeoutError if that fails."""

@@ -55,7 +55,7 @@ The sidebar on the left works like netrw/neo-tree. The main pane shows the curre
 | Searches | Past searches, read from `searches/` | Open its results buffer |
 | Results | Parsed result lines from one search | Send the `!Bot …` request |
 | Downloads | Finished books in `downloads/` | Show the path, or open the file with `xdg-open` |
-| Transfers | Pending, in-progress, failed and queued requests | Retry or cancel |
+| Transfers | Pending, waiting, in-progress and failed requests | Retry or cancel |
 | Log | IRC notices, warnings, rejected offers | — |
 
 ### Modes and keys
@@ -108,38 +108,15 @@ class AgentService(Protocol):
 ```
 
 - **Phase 1:** `AgentService` is the agent object itself, running in the TUI's process. The Unix socket keeps running there too, as it does in the headless agent today.
-- **Later (optional):** run the agent as a daemon and have the TUI connect to it over the Unix socket as a client. Then one IRC connection serves the TUI and scripts. That needs a real protocol (JSON lines with request IDs and streamed events), so it's only worth building once it's actually needed. *(Open question 2.)*
+- **Later (optional):** run the agent as a daemon and have the TUI connect to it over the Unix socket as a client. Then one IRC connection serves the TUI and scripts. The socket already speaks JSON lines and streams each request's events (see `unix_socket.py`). A client needs more than that, though: a subscription to every event, and `requests()` and `cancel()`. So it's only worth building once it's actually needed. *(Open question 2.)*
 
 Today's headless mode (logs to the terminal, input over the socket) stays available, for example as `ebooks_agent.py --headless`, with the TUI as the default.
 
 ## Backend prerequisites (phase 0)
 
-These come before any UI work. Each one is useful on its own. They're tracked in [`TODO.md`](../TODO.md#phase-0--tui-backend-prerequisites).
+These come before any UI work, and are done. They're tracked in [`TODO.md`](../TODO.md#phase-0--tui-backend-prerequisites), and the interface they built is specified in [`core-interface.md`](core-interface.md): the results parser, separate `search()` and `request()`, the event stream, progress reporting, per-bot request tracking, all output through logging, and the Unix socket rebuilt on the core.
 
-The interface these build is specified in [`core-interface.md`](core-interface.md), which supersedes the event list and per-bot details below where they differ.
-
-1. **Results parser** (`results.py`) — *done*
-   - Turns a results file into a `SearchResults` object: query, list count, match count, header lines, and `items: list[ResultItem]`.
-   - Each item has the bot, the request line, the title, the file type, the size in bytes and the raw line.
-   - Pure code, so it's easy to test, using a trimmed copy of the real file as test data.
-2. **Separate `search()` and `request()` in the agent** — *done*
-   - `search(query)` sends `@search <query>`, expects a zipped `.txt` back, and saves it under `searches/` with a clean name and timestamp (no `@search ` prefix).
-   - `request(line)` sends the `!Bot …` line and saves the book to `downloads/`.
-3. **Event stream**
-   - A stream of typed events per subscriber: `StatusChanged`, `RequestUpdated` and `BotMessage` (see `core-interface.md`).
-   - The headless mode just logs them; the TUI renders them.
-4. **Progress reporting**
-   - `Downloads.receive` takes an optional callback that receives (bytes received, total).
-5. **Track requests per bot**
-   - Bots queue requests ("you are in queue position N"), and the file can arrive minutes later, so a fixed 60s timeout is the wrong model.
-   - Track pending requests by expected bot, with no global lock:
-     - wait for an offer from that sender; the offer timeout restarts whenever the bot speaks, and a queued request has none;
-     - show that bot's notices as `BotMessage` events.
-   - Several books from different bots can then be in flight while you keep browsing.
-   - This replaces the single-search lock and the "separate the timeouts" TODO.
-6. **All output through logging** — *done; the Log buffer handler moves to phase 1*
-   - Once the TUI owns the terminal, any stray `print` breaks the screen.
-   - Route all status output through `logging`, with a handler that feeds the Log buffer.
+Two plans from earlier drafts were dropped along the way: a `QUEUED` state with no offer timeout (bot queues have only lasted seconds), and restarting the offer timeout whenever a bot speaks.
 
 ## Phases
 

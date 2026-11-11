@@ -31,10 +31,45 @@ def test_bare_offer_without_ctcp_wrapper():
 @pytest.mark.parametrize("text", [
     f"hey lol DCC SEND book.epub {PUB} 5000 1234",  # must be at the start
     "just chatting",
-    "DCC SEND missing fields",
+    "DCC SENDING you nothing",
 ])
 def test_non_offers_return_none(text):
     assert parse_dcc_offer(text) is None
+
+
+@pytest.mark.parametrize("text", [
+    "DCC SEND missing fields",
+    f"\x01DCC SEND book.epub {PUB} 5000\x01",          # no size
+    f"DCC SEND book.epub {PUB} 5000 1234 trailing",     # junk after the size
+])
+def test_malformed_offers_are_errors(text):
+    # So a bot we're waiting on fails the request with a reason, not a timeout
+    with pytest.raises(InvalidOfferError, match="Couldn't parse"):
+        parse_dcc_offer(text)
+
+
+def test_bare_filename_with_spaces():
+    offer = parse_dcc_offer(f"\x01DCC SEND My Book 2 (1999).epub {PUB} 5000 1234\x01")
+    assert (offer.filename, offer.ip, offer.port, offer.filesize) == (
+        "My Book 2 (1999).epub", PUBLIC_IP, 5000, 1234)
+
+
+def test_bare_filename_ending_in_numbers():
+    # The last three fields are always ip, port and size
+    offer = parse_dcc_offer(f"DCC SEND Vol 2 3 {PUB} 5000 1234")
+    assert (offer.filename, offer.port, offer.filesize) == ("Vol 2 3", 5000, 1234)
+
+
+def test_dotted_quad_ip():
+    offer = parse_dcc_offer(f'\x01DCC SEND "a.epub" {PUBLIC_IP} 5000 1234\x01')
+    assert offer.ip == PUBLIC_IP
+
+
+def test_dotted_quad_must_be_valid_and_public():
+    with pytest.raises(InvalidOfferError):
+        parse_dcc_offer("DCC SEND a.epub 999.1.1.1 5000 1234")
+    with pytest.raises(InvalidOfferError):
+        parse_dcc_offer("DCC SEND a.epub 192.168.1.1 5000 1234")
 
 
 @pytest.mark.parametrize("ip", [

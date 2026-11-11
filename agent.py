@@ -5,6 +5,7 @@ import dataclasses
 import hashlib
 import itertools
 import logging
+import ssl
 import time
 from collections.abc import AsyncIterator
 
@@ -41,6 +42,16 @@ PROGRESS_INTERVAL = 0.25
 # transfers are plaintext regardless.
 
 
+class _IrcBot(irc3.IrcBot):
+    def get_ssl_context(self):
+        # irc3 leaves the minimum TLS version to OpenSSL's defaults, which
+        # vary by system and can still allow TLS 1.0/1.1. Set it ourselves.
+        context = super().get_ssl_context()
+        if isinstance(context, ssl.SSLContext):
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+        return context
+
+
 class EbooksAgent:
     def __init__(self, config: Config | None = None):
         self._config = config or Config()
@@ -59,7 +70,7 @@ class EbooksAgent:
     def _build_bot(self) -> irc3.IrcBot:
         # Configure our server / user settings
         irc = self._config.irc
-        bot = irc3.IrcBot.from_config({
+        bot = _IrcBot.from_config({
             "nick": irc.nick,
             "autojoins": [],
             "host": irc.host,
@@ -71,13 +82,11 @@ class EbooksAgent:
                 "irc3.plugins.core",
                 "irc3.plugins.userlist",
             ],
+            # Read by EbooksPlugin, which irc3 creates for us
+            "ebooks_config": self._config,
         })
-        # Register our plugin
         bot.include(EbooksPlugin)
-        # Get back our plugin instance,
-        # now tied to irc3 lifecycle
         plugin = bot.get_plugin(EbooksPlugin)
-        plugin.configure(self._config)
         self._attach(plugin)
         # Add our event handlers
         # 1. Listening for a connection
@@ -143,14 +152,10 @@ class EbooksAgent:
         log.info("TLS %s to %s (cert sha256 %s…, unverified)",
                  tls.version() if tls else "?", self._peer, self._fingerprint or "unknown")
 
-    def _on_bot_message(self, nick: str, text: str):
-        # Link it to the oldest open request naming that bot, else the search
-        # in flight (whichever channel member is answering it)
-        sent = [r for r in self._requests.values()
-                if r.state in (RequestState.WAITING, RequestState.TRANSFERRING)]
-        match = (next((r for r in sent if r.bot and r.bot.lower() == nick.lower()), None)
-                 or next((r for r in sent if r.kind is RequestKind.SEARCH), None))
-        self._emit(BotMessage(nick, text, match.id if match else None))
+    def _on_bot_message(self, nick: str, text: str, request_id: str | None):
+        # The plugin links it the way it matches offers: we pass each
+        # request's id to the plugin as its key
+        self._emit(BotMessage(nick, text, request_id))
 
     async def stop(self, timeout: float = QUIT_TIMEOUT):
         """Cancel outstanding requests, then send QUIT and wait (up to
@@ -210,14 +215,14 @@ class EbooksAgent:
         plugin = self._require_plugin()
         query = check_query(query)
         return self._start(RequestKind.SEARCH, f"@search {query}", None,
-                           lambda update: plugin.search(query, update))
+                           lambda update, key: plugin.search(query, update, key))
 
     def request(self, line: str) -> Request:
         """Start a `!Bot <file>` request; the book is saved in the downloads dir."""
         plugin = self._require_plugin()
         line, bot = check_request(line)
         return self._start(RequestKind.BOOK, line, bot,
-                           lambda update: plugin.request(line, update))
+                           lambda update, key: plugin.request(line, bot, update, key))
 
     def cancel(self, request_id: str) -> None:
         """Stop waiting for or receiving a request. No-op if it already finished."""
@@ -242,7 +247,7 @@ class EbooksAgent:
     async def _run(self, request_id: str, work):
         """Do a request's work, recording how it ends. Cancellation is recorded by cancel()."""
         try:
-            path = await work(lambda **changes: self._update(request_id, **changes))
+            path = await work(lambda **changes: self._update(request_id, **changes), request_id)
         except (TimeoutError, ConnectionError, DownloadError) as e:
             self._update(request_id, state=RequestState.FAILED, error=str(e))
         except Exception:

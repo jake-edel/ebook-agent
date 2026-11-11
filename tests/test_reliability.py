@@ -174,6 +174,7 @@ def test_corrupt_zip_is_a_download_error(dl, downloads):
     zp.write_bytes(b"this is not a zip file")
     with pytest.raises(BadArchiveError):
         dl.extract(zp, "junk")
+    assert list(downloads.iterdir()) == []  # no use keeping it
 
 
 def test_empty_zip_is_a_download_error(dl, downloads):
@@ -182,6 +183,7 @@ def test_empty_zip_is_a_download_error(dl, downloads):
         pass
     with pytest.raises(BadArchiveError, match="no files"):
         dl.extract(zp, "empty")
+    assert not zp.exists()
 
 
 def test_truncated_zip_member_leaves_no_partial_file(dl, downloads, make_zip):
@@ -192,8 +194,7 @@ def test_truncated_zip_member_leaves_no_partial_file(dl, downloads, make_zip):
     zp.write_bytes(data[:mid] + b"\xff" * 64 + data[mid + 64:])
     with pytest.raises((BadArchiveError, dcc.FileTooLargeError)):
         dl.extract(zp, "cut")
-    assert not (downloads / "cut.epub").exists()
-    assert leftovers(downloads) == []
+    assert list(downloads.iterdir()) == []  # no partial book, no zip
 
 
 # --- callers survive unexpected errors --------------------------------------
