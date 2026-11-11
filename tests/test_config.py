@@ -90,6 +90,13 @@ def test_invalid_toml(tmp_path):
     ('[irc]\nnick = "9lives"\n', "isn't a valid IRC nick"),
     ('[irc]\nnick = "has space"\n', "isn't a valid IRC nick"),
     ('[irc]\nchannel = "ebooks"\n', "isn't a valid channel"),
+    ('[irc]\nusername = ""\n', "isn't a valid username"),
+    ('[irc]\nusername = "two words"\n', "isn't a valid username"),
+    ('[irc]\nusername = "me@home"\n', "isn't a valid username"),
+    ('[irc]\nusername = "elevenchars"\n', "isn't a valid username"),
+    ('[irc]\nrealname = "  "\n', "realname: .* must be 1–50 characters"),
+    ('[irc]\nrealname = "line\\nbreak"\n', "realname: .* must be 1–50 characters"),
+    (f'[irc]\nrealname = "{"x" * 51}"\n', "realname: .* must be 1–50 characters"),
     ('[downloads]\noffer_timeout = 0\n', "must be greater than 0"),
     ('[downloads]\nmax_size_mib = 5000\n', "max_size_mib: must be 1–4095"),
     ('[downloads]\ndisk_headroom_mib = -1\n', "can't be negative"),
@@ -98,6 +105,11 @@ def test_invalid_toml(tmp_path):
 def test_bad_values_in_file(tmp_path, text, match):
     with pytest.raises(ConfigError, match=match):
         load_config(write(tmp_path, text))
+
+
+def test_username_and_realname_from_file(tmp_path):
+    cfg = load_config(write(tmp_path, '[irc]\nusername = "jake"\nrealname = "Jake E."\n'))
+    assert (cfg.irc.username, cfg.irc.realname) == ("jake", "Jake E.")
 
 
 def test_all_errors_reported_together(tmp_path):

@@ -101,6 +101,9 @@ class EbooksAgent:
         irc = self._config.irc
         bot = _IrcBot.from_config({
             "nick": irc.nick,
+            # Shown by /whois; irc3's own defaults would say we're a bot
+            "username": irc.username,
+            "realname": irc.realname,
             "autojoins": [],
             "host": irc.host,
             "port": irc.port,

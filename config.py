@@ -30,7 +30,12 @@ class IrcConfig:
     host: str = "irc.irchighway.net"
     # TLS port. TLS is always on (see agent.py), so this must be a TLS port.
     port: int = 6697
-    nick: str = "ebooks_cli"
+    nick: str = "anjay"
+    # What a /whois on us shows, besides the nick: the "user" part of
+    # nick!user@host, and the free-text real name. Left to irc3, these would
+    # announce us as "Irc bot based on irc3"
+    username: str = "anjay"
+    realname: str = "andrew_jacobs"
     channel: str = "#ebooks"
     # Seconds to wait for the server connection and channel join at startup
     connect_timeout: float = 30.0
@@ -184,6 +189,10 @@ def load_config(path: Path | None = None) -> Config:
 
 # RFC 2812 nick characters. Servers cap the length (IRCHighway: 30).
 _NICK_RE = re.compile(r"^[A-Za-z\[\]\\`_^{|}][A-Za-z0-9\[\]\\`_^{|}-]{0,29}$")
+# The user part of nick!user@host: no spaces, "@" or control chars. Servers
+# cap it (commonly at 10) and may prefix "~" when we run no identd.
+_USERNAME_RE = re.compile(r"^[^\s@\x00-\x1f\x7f]{1,10}$")
+_MAX_REALNAME = 50
 # Channels start with # or &, and can't contain spaces, commas or control chars
 _CHANNEL_RE = re.compile(r"^[#&][^\s,\x00-\x1f]{1,49}$")
 # DCC acks are 32-bit byte counts, so a transfer must stay under 4 GiB
@@ -202,6 +211,16 @@ def _validate(cfg: Config):
         errors.append(
             f"irc.nick: {irc.nick!r} isn't a valid IRC nick "
             "(letters, digits and []\\`_^{|}-, not starting with a digit or -, max 30)"
+        )
+    if not _USERNAME_RE.match(irc.username):
+        errors.append(
+            f"irc.username: {irc.username!r} isn't a valid username "
+            "(1–10 characters, no spaces or @)"
+        )
+    if (not irc.realname.strip() or len(irc.realname) > _MAX_REALNAME
+            or any(c in irc.realname for c in "\r\n\x00")):
+        errors.append(
+            f"irc.realname: {irc.realname!r} must be 1–{_MAX_REALNAME} characters on one line"
         )
     if not _CHANNEL_RE.match(irc.channel):
         errors.append(f"irc.channel: {irc.channel!r} isn't a valid channel (e.g. #ebooks)")

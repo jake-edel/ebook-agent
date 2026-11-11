@@ -1,6 +1,7 @@
 """Clean shutdown: stop() sends QUIT and waits for the server to hang up."""
 
 import asyncio
+import dataclasses
 import time
 
 import pytest
@@ -209,3 +210,35 @@ def test_agent_cannot_be_restarted():
             agent.search("dune")
 
     asyncio.run(go())
+
+
+def test_whois_shows_the_configured_username_and_realname(dl):
+    # Not irc3's defaults, which say "Irc bot based on irc3"
+    server = FakeIrcServer()
+
+    async def go():
+        agent = plaintext_agent(await server.start(), dl)
+        agent._config = dataclasses.replace(agent._config, irc=dataclasses.replace(
+            agent._config.irc, username="jake", realname="Jake E."))
+        await agent.start()
+        await agent.wait_ready(2)
+        await agent.stop()
+        server.server.close()
+
+    asyncio.run(go())
+    assert [line for line in server.lines if line.startswith("USER")] == ["USER jake 0 * :Jake E."]
+
+
+def test_default_identity_doesnt_mention_irc3(dl):
+    server = FakeIrcServer()
+
+    async def go():
+        agent = plaintext_agent(await server.start(), dl)
+        await agent.start()
+        await agent.wait_ready(2)
+        await agent.stop()
+        server.server.close()
+
+    asyncio.run(go())
+    [user] = [line for line in server.lines if line.startswith("USER")]
+    assert user == "USER ebooks 0 * :ebooks"
