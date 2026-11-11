@@ -63,39 +63,67 @@ Start the agent:
 python ebooks_agent.py
 ```
 
-It connects to IRC and then runs in the foreground, logging what it does: connecting, each request, downloads, and where each file was saved. There's no prompt. Searches come in over a Unix socket instead:
+It connects to IRC and then runs in the foreground, logging what it does: connecting, each request, downloads, and where each file was saved. There's no prompt. Commands come in over a Unix socket instead:
 
 ```
-INFO Connected to irc.irchighway.net and joined #ebooks
+INFO Connected to irc.irchighway.net, joining #ebooks
+INFO Joined #ebooks
 INFO Listening on /run/user/1000/ebooks.sock
-INFO Send a search with: echo 'Dune Frank Herbert' | socat - UNIX-CONNECT:/run/user/1000/ebooks.sock
 INFO Ready. Press Ctrl+C to stop.
-INFO Request: Dune Frank Herbert
+INFO Request: @search dune frank herbert
 ...
-INFO Saved: /home/jake/Projects/ebooks-agent/downloads/Dune Frank Herbert.epub
+INFO Saved: /home/jake/ebooks-cli/searches/20261108-143005 dune frank herbert.txt
 ```
 
 Press `Ctrl+C`, or send `SIGTERM`, to disconnect and exit.
 
-### Sending searches and requests
+### The socket
 
-From another terminal, or from a script, write one line per connection to the socket. A search returns the results file. A `!Bot` line, copied from a results file, requests that book:
+Ask the agent where its socket is rather than working it out yourself:
 
 ```bash
-echo "Foundation Asimov" | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/ebooks.sock
-# -> searches/20261108-143005 Foundation Asimov.txt
-
-echo "!Bsk Isaac Asimov - Foundation.epub" | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/ebooks.sock
-# -> downloads/Isaac Asimov - Foundation.epub
+python ebooks_agent.py --socket-path
+# -> /run/user/1000/ebooks.sock
 ```
 
-A line starting with `!` is sent as a book request, and only that bot's offer is accepted. Anything else is a search, sent as `@search <line>`. The `@search ` prefix is optional.
+It's normally `$XDG_RUNTIME_DIR/ebooks.sock`. If `XDG_RUNTIME_DIR` isn't set or isn't private (e.g. some cron or SSH sessions), it falls back to a private `/tmp/ebooks-<uid>/` directory.
 
-The socket path is logged at startup. It's normally `$XDG_RUNTIME_DIR/ebooks.sock`, i.e. `/run/user/<your uid>/ebooks.sock`.
+Only your user can use it: the socket is mode `0600` inside a directory only you can access, and connections from other users are rejected. If the socket can't be created, the agent exits with an error, since nothing could reach it.
 
-Only your user can use it: the socket is mode `0600` inside a directory only you can access, and connections from other users are rejected. If `XDG_RUNTIME_DIR` isn't set (e.g. some cron or SSH sessions), it falls back to a private `/tmp/ebooks-<uid>/` directory. If the socket can't be created, the agent exits with an error, since there would be no way to send it searches.
+### Sending commands
 
-The reply is the saved file's path, or a line starting with `error:` explaining what went wrong.
+The protocol is JSON lines. Connect, send one command, and read replies until the agent closes the connection:
+
+```bash
+SOCK=$(python ebooks_agent.py --socket-path)
+
+# Search: the results file is saved in searches/
+echo '{"cmd": "search", "query": "Foundation Asimov"}' | socat -t 600 - UNIX-CONNECT:$SOCK
+
+# Request a book: a "!Bot ..." line from a results file (the part before " ::INFO::")
+echo '{"cmd": "request", "line": "!Bsk Isaac Asimov - Foundation.epub"}' | socat -t 600 - UNIX-CONNECT:$SOCK
+
+# Connection status
+echo '{"cmd": "status"}' | socat - UNIX-CONNECT:$SOCK
+```
+
+(`-t 600` keeps socat listening after it has sent the command. By default it gives up half a second later, long before a reply arrives.)
+
+The replies to `search` and `request` are the agent's own events, one JSON object per line, for that request only:
+
+```json
+{"type": "RequestUpdated", "request": {"id": "1", "kind": "search", "line": "@search Foundation Asimov", "state": "pending", ...}}
+{"type": "RequestUpdated", "request": {"id": "1", "state": "waiting", ...}}
+{"type": "BotMessage", "nick": "Search", "text": "...", "request_id": "1"}
+{"type": "RequestUpdated", "request": {"id": "1", "state": "transferring", "filename": "...", "size": 51234, "received": 0, ...}}
+{"type": "RequestUpdated", "request": {"id": "1", "state": "done", "path": "/home/jake/ebooks-cli/searches/20261108-143005 Foundation Asimov.txt", ...}}
+```
+
+The last line is always a `RequestUpdated` whose `state` is `done` (see `path`), `failed` (see `error`) or `cancelled`. A command that can't be carried out gets `{"type": "Error", "error": "..."}` instead, and so does a client still waiting when the agent shuts down. If you hang up early, the request carries on and the file is still saved.
+
+Limits: the command must arrive within 10 seconds of connecting and be at most 8 KiB, and the line sent to IRC (`@search <query>` or the `!Bot` line) at most 350 bytes.
+
+The Neovim `:Ebook` command (`~/.dotfiles/nvim/lua/config/ebook.lua`) is a client of this socket.
 
 ## Testing
 
@@ -118,12 +146,12 @@ The tests never touch the network or your real `downloads/` and `searches/` fold
 ## How it works
 
 1. Connects to `irc.irchighway.net:6697` over TLS and joins `#ebooks`
-2. Waits for lines on the Unix socket and sends each one to the channel, as `@search <query>` or as the `!Bot …` request line
+2. Waits for commands on the Unix socket and sends each one to the channel, as `@search <query>` or as the `!Bot …` request line
 3. Waits for a `DCC SEND` offer from a channel bot (up to 60 seconds). For a `!Bot` request, only that bot may answer
 4. Opens a direct TCP connection to the bot and streams the file into a temporary `.part` file, in `searches/` for results and `downloads/` for books
 5. Once every byte has arrived, gives the file its real name. If that name is taken, it uses `Dune (1).epub` and so on rather than overwriting anything
 6. If the file is a `.zip`, extracts the ebook the same way and removes the archive
-7. Returns the local file path
+7. Reports the local file path
 
 ## Project structure
 
@@ -133,7 +161,7 @@ config.py         — loads and validates settings (defaults, config.toml, env, 
 config.example.toml — documented template for config.toml
 agent.py          — EbooksAgent class, owns the IRC connection lifecycle
 plugin.py         — irc3 plugin, handles IRC events and DCC offers
-unix_socket.py    — Unix socket server, the agent's input
+unix_socket.py    — Unix socket server (JSON lines), the agent's input
 dcc.py            — DCC file transfer and zip extraction
 results.py        — parser for SearchBot result files
 downloads/        — where books are saved

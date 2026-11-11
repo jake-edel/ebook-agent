@@ -38,12 +38,14 @@ The groundwork for the planned TUI. [`docs/core-interface.md`](docs/core-interfa
   - All status output goes through `logging`. The only `print`s left are startup errors to stderr in `ebooks_agent.py`, before any UI exists.
   - The log handler that feeds the TUI's Log buffer is part of TUI phase 1, not a backend prerequisite.
 
-- [ ] **0.7 Rebuild the Unix socket on the core**: `unix_socket.py`
-  - **What:** the socket already runs on `search()` / `request()` and `wait()`, but still speaks the old one-line-in, one-path-out protocol. Redesign it (that protocol doesn't need to be preserved).
-  - **Requirements:**
-    - Input limits: a timeout on reading a command, so an idle client can't hold a handler forever, and a cap on query length. (A line over 64 KiB is already refused.)
-    - Keep the current access rules: a private directory, mode 0600, same user only.
-  - **Then** update the Neovim `:Ebook` command (`~/.dotfiles/nvim/lua/config/ebook.lua`) to the new protocol. Its socket lookup only approximates the agent's fallback rules (it reads only `$TMPDIR`, and falls back whenever the socket file is missing), so have the agent report its socket path instead of clients recomputing it.
+- [x] **0.7 Rebuild the Unix socket on the core**: `unix_socket.py`
+  - JSON lines: one command per connection (`search`, `request`, `status`), answered with that request's `RequestUpdated` and `BotMessage` events (`core.to_dict`) until it finishes, or with an `Error`. The protocol is described in the module docstring and the README.
+  - Input limits: 10s to send the command, 8 KiB per command line. The line sent to IRC is capped at 350 bytes in `check_query` / `check_request`, so the TUI gets the same limit (irc3 would otherwise split a long line into several messages).
+  - Same access rules: private directory, mode 0600, same user only.
+  - Shutdown no longer hangs while a client is waiting on a request (`serve_forever()` waited for every client to hang up).
+  - `ebooks_agent.py --socket-path` prints the socket's location, and the Neovim `:Ebook` command uses it instead of guessing. `:Ebook` now speaks the new protocol, shows bot replies and progress, and sends a selected `!Bot … ::INFO:: …` results line as a request.
+  - Fixed along the way: closing an `events()` stream before reading from it left it subscribed.
+  - Tests in `tests/test_socket.py` and `tests/test_main.py`.
 
 ## Connection lifecycle
 

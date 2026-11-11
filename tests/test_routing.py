@@ -9,9 +9,7 @@ import pytest
 
 import dcc
 import plugin
-import unix_socket as us
 from config import ConfigError, load_config
-from core import Request, RequestKind, RequestState
 
 from conftest import OUR_NICK, make_plugin, mask, offer_text
 
@@ -129,45 +127,24 @@ def test_bad_input_rejected_before_sending(dl, call, serve):
     assert p.bot.sent == []
 
 
+def test_lines_too_long_for_irc_rejected(dl, serve):
+    p = make_plugin(dl)
+    with pytest.raises(ValueError, match="too long"):
+        asyncio.run(p.search("x" * plugin.MAX_LINE_BYTES))  # the "@search " pushes it over
+    with pytest.raises(ValueError, match="too long"):
+        plugin.check_request("!Bsk " + "é" * (plugin.MAX_LINE_BYTES // 2))  # bytes, not chars
+    assert p.bot.sent == []
+    # Right at the limit is fine
+    assert plugin.check_query("x" * (plugin.MAX_LINE_BYTES - len("@search ")))
+    line = "!Bsk " + "x" * (plugin.MAX_LINE_BYTES - 5)
+    assert plugin.check_request(line) == (line, "Bsk")
+
+
 def test_safe_path_only_into_save_dirs(dl, tmp_path, searches, downloads):
     assert dl.safe_path("a.txt", searches).parent == searches
     assert dl.safe_path("a.txt").parent == downloads
     with pytest.raises(dcc.UnsafeFilenameError):
         dl.safe_path("a.txt", tmp_path)
-
-
-# --- the socket dispatches on the line ----------------------------------------
-
-class RoutingAgent:
-    def __init__(self):
-        self.calls = []
-
-    def _done(self, kind):
-        return Request(id="1", kind=kind, line="", bot=None, state=RequestState.DONE,
-                       created_at=0, updated_at=0, path="file")
-
-    def search(self, query):
-        self.calls.append(("search", query))
-        return self._done(RequestKind.SEARCH)
-
-    def request(self, line):
-        self.calls.append(("request", line))
-        return self._done(RequestKind.BOOK)
-
-    async def wait(self, request_id):
-        return self._done(RequestKind.SEARCH)
-
-
-@pytest.mark.parametrize("line, expected", [
-    ("dune", ("search", "dune")),
-    ("@search dune", ("search", "dune")),
-    ("@SEARCH dune", ("search", "dune")),
-    ("!Oatmeal Dune.epub", ("request", "!Oatmeal Dune.epub")),
-])
-def test_socket_dispatch(line, expected):
-    agent = RoutingAgent()
-    asyncio.run(us._dispatch(agent, line))
-    assert agent.calls == [expected]
 
 
 # --- config -------------------------------------------------------------------

@@ -1,18 +1,35 @@
-"""
-Unix socket server — the agent's input: accepts one line, returns a file path.
+"""Unix socket server: lets other processes (scripts, Neovim's :Ebook) drive the agent.
 
-- "!Bot <file>" requests that book and replies with where it was saved.
-- Anything else is a search: "@search dune" or just "dune". The reply is
-  the path of the saved results file.
+The protocol is JSON lines. A client connects, sends one command, and reads
+replies until the server closes the connection:
+
+    -> {"cmd": "search", "query": "dune frank herbert"}
+    -> {"cmd": "request", "line": "!Bsk Frank Herbert - Dune.epub"}
+       <- {"type": "RequestUpdated", "request": {"id": "1", "state": "pending", ...}}
+       <- {"type": "BotMessage", "nick": "Bsk", "text": "...", "request_id": "1"}
+       <- ... every change, progress included, ending with the RequestUpdated
+          whose state is "done" (see request.path), "failed" (request.error)
+          or "cancelled"
+
+    -> {"cmd": "status"}
+       <- {"type": "Status", "status": {"connected": true, "server": ..., ...}}
+
+Replies are the core's own events (core.to_dict), limited to the client's
+request. A command that can't be carried out gets
+{"type": "Error", "error": "..."} instead, as does a client still waiting
+when the agent shuts down. A client that hangs up early only stops the
+replies: the request carries on, and the file is still saved.
 
 The socket lives in a directory only the current user can access
 ($XDG_RUNTIME_DIR, normally /run/user/<uid>), is created mode 0600, and
-rejects connections from any other user.
+rejects connections from any other user. `ebooks_agent.py --socket-path`
+prints where it is.
 
-Test: echo "dune frank herbert" | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/ebooks.sock
+Test: echo '{"cmd": "search", "query": "dune"}' | socat -t 600 - UNIX-CONNECT:$(python ebooks_agent.py --socket-path)
 """
 
 import asyncio
+import json
 import logging
 import os
 import socket
@@ -21,7 +38,7 @@ import struct
 import tempfile
 from pathlib import Path
 
-from core import RequestState
+from core import BotMessage, RequestUpdated, to_dict
 
 log = logging.getLogger(__name__)
 
@@ -34,10 +51,6 @@ class UnsafeSocketPathError(RuntimeError):
 
 class SocketUnavailableError(RuntimeError):
     """The socket server couldn't be started."""
-
-
-class RequestFailedError(Exception):
-    """A request ended without a file; the message says why."""
 
 
 def _is_private_dir(path: Path) -> bool:
@@ -121,28 +134,101 @@ def _peer_uid(writer: asyncio.StreamWriter) -> int | None:
     return uid
 
 
-_SEARCH_PREFIX = "@search "
+# A client gets this long to send its command, so an idle one can't hold a
+# connection open forever
+COMMAND_TIMEOUT = 10.0
+# The longest command line we'll read. Requests themselves are capped much
+# lower (plugin.MAX_LINE_BYTES); this leaves room for JSON escaping.
+MAX_COMMAND_BYTES = 8192
+
+# Each command and the one string argument it takes
+_COMMANDS = {"search": "query", "request": "line", "status": None}
 
 
-async def _dispatch(agent, line: str) -> Path:
-    """Route a socket line to the agent's request() or search() and wait for the file."""
-    if line.startswith("!"):
-        req = agent.request(line)
-    else:
-        # Accept the IRC form too, so "@search dune" doesn't become "@search @search dune"
-        if line.lower().startswith(_SEARCH_PREFIX):
-            line = line[len(_SEARCH_PREFIX):]
-        req = agent.search(line)
-    final = await agent.wait(req.id)
-    if final.state is not RequestState.DONE:
-        raise RequestFailedError(final.error or final.state.value)
-    return final.path
+class _ClientError(Exception):
+    """A bad command; the message is sent back to the client."""
+
+
+def _parse_command(data: bytes) -> tuple[str, str | None]:
+    """Turn a command line into (command, argument). Raises _ClientError."""
+    usage = ('expected {"cmd": "search", "query": ...}, {"cmd": "request", "line": ...} '
+             'or {"cmd": "status"}')
+    try:
+        cmd = json.loads(data)
+    except ValueError:  # bad JSON or bad UTF-8
+        raise _ClientError(f"not a JSON command: {usage}") from None
+    name = cmd.get("cmd") if isinstance(cmd, dict) else None
+    if name not in _COMMANDS:
+        raise _ClientError(f"unknown command: {usage}")
+    arg = _COMMANDS[name]
+    expected = {"cmd", arg} if arg else {"cmd"}
+    if cmd.keys() != expected:
+        raise _ClientError(f"{name} takes {', '.join(sorted(expected))}, got {', '.join(sorted(cmd))}")
+    if arg and not isinstance(cmd[arg], str):
+        raise _ClientError(f"{name}: {arg} must be a string")
+    return name, cmd.get(arg)
+
+
+def _line(message: dict) -> bytes:
+    return json.dumps(message).encode() + b"\n"
+
+
+async def _send(writer: asyncio.StreamWriter, message: dict):
+    writer.write(_line(message))
+    await writer.drain()
+
+
+def _error(text: str) -> dict:
+    return {"type": "Error", "error": text}
+
+
+async def _serve_client(agent, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    """Read one command, carry it out, and stream back the replies."""
+    try:
+        async with asyncio.timeout(COMMAND_TIMEOUT):
+            data = await reader.readline()
+    except TimeoutError:
+        raise _ClientError(f"no command within {COMMAND_TIMEOUT:g}s") from None
+    except ValueError:  # the line is over the reader's limit
+        raise _ClientError(f"command longer than {MAX_COMMAND_BYTES} bytes") from None
+    if not data.strip():
+        return  # connected and hung up
+
+    name, arg = _parse_command(data)
+    if name == "status":
+        await _send(writer, {"type": "Status", "status": to_dict(agent.status())})
+        return
+
+    # Subscribe before starting the request, so not even its first event is missed
+    events = agent.events()
+    try:
+        try:
+            req = agent.search(arg) if name == "search" else agent.request(arg)
+        except ValueError as e:  # e.g. an empty query, or a line that isn't "!Bot <file>"
+            raise _ClientError(str(e)) from None
+        log.info("Request: %s", req.line)
+        async for event in events:
+            if isinstance(event, RequestUpdated) and event.request.id == req.id:
+                await _send(writer, to_dict(event))
+                final = event.request
+                if final.state.finished:
+                    if final.path:
+                        log.info("Saved: %s", final.path)
+                    else:
+                        log.warning("Failed: %s — %s", final.line, final.error or final.state.value)
+                    return
+            elif isinstance(event, BotMessage) and event.request_id == req.id:
+                await _send(writer, to_dict(event))
+    finally:
+        await events.aclose()
 
 
 # Factory function that closes over agent, making it available to handle()
 # without changing its signature — asyncio expects (reader, writer) only
-def _make_handler(agent):
+def _make_handler(agent, handlers: set[asyncio.Task]):
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        # Tracked so shutdown can end connections still following a request
+        handlers.add(task := asyncio.current_task())
         try:
             # Directory and file permissions should already keep other users out;
             # verify the connecting process's UID anyway in case they're loosened
@@ -150,41 +236,26 @@ def _make_handler(agent):
             if uid is not None and uid != os.getuid():
                 log.warning("Rejected socket connection from uid %s", uid)
                 return
-
-            # Read line by line, decode bytes to text
-            data = await reader.readline()
-            term = data.decode().strip()
-
-            # Nothing there — close up shop
-            if not term:
-                return
-
-            log.info("Request: %s", term)
             try:
-                path = await _dispatch(agent, term)
-                reply = f"{path}\n"
-                log.info("Saved: %s", path)
-            except (RequestFailedError, ValueError) as e:
-                reply = f"error: {e}\n"
-                log.warning("Failed: %s — %s", term, e)
-            except Exception:
-                # A bug, not a normal failure — but the client still gets an
-                # answer instead of hanging, and the details go to the log
-                log.exception("Search for %r failed unexpectedly", term)
-                reply = "error: internal error (see agent log)\n"
-
-            # Write the response back to the external source
-            writer.write(reply.encode())
-            try:
-                # Flush once we're done — caller has probably already closed their end by now
-                await writer.drain()
-            except ConnectionError:
-                # client (e.g. socat) closed its end before drain finished
-                pass
+                await _serve_client(agent, reader, writer)
+            except _ClientError as e:
+                log.warning("Socket command refused: %s", e)
+                await _send(writer, _error(str(e)))
+        except asyncio.CancelledError:
+            # The agent is shutting down. Tell the client why, if it's still
+            # there (no drain: we mustn't wait on a client now).
+            writer.write(_line(_error("agent is shutting down")))
+            raise
+        except ConnectionError:
+            # The client hung up while we were replying. Its request carries on.
+            log.info("Socket client disconnected")
         except Exception:
-            # e.g. an oversized line or undecodable bytes from the client
+            # A bug, not a normal failure — the client still gets an answer
+            # instead of hanging, and the details go to the log
             log.exception("Socket connection failed")
+            writer.write(_line(_error("internal error (see agent log)")))
         finally:
+            handlers.discard(task)
             # Always release the connection, whatever happened above
             writer.close()
 
@@ -192,23 +263,29 @@ def _make_handler(agent):
 
 
 async def unix_socket(agent, path: Path | None = None):
+    """Serve the socket until cancelled. Raises SocketUnavailableError if it can't be opened."""
     try:
         path = path or socket_path()
         _remove_stale_socket(path)
         sock = _bind_private_socket(path)
     except (UnsafeSocketPathError, OSError) as e:
-        # The socket is the agent's only input, so this is fatal
         raise SocketUnavailableError(f"Can't open Unix socket: {e}") from e
 
-    # Pass asyncio our handler, which tells the socket server what to do when bytes arrive
-    # asyncio because who knows when those bytes are showing up
-    server = await asyncio.start_unix_server(_make_handler(agent), sock=sock)
+    handlers: set[asyncio.Task] = set()
+    server = await asyncio.start_unix_server(
+        _make_handler(agent, handlers), sock=sock, limit=MAX_COMMAND_BYTES)
     log.info("Listening on %s", path)
-    log.info("Send a search with: echo 'Dune Frank Herbert' | socat - UNIX-CONNECT:%s", path)
     log.info("Ready. Press Ctrl+C to stop.")
     try:
-        async with server:
-            await server.serve_forever()
+        # Not serve_forever() or `async with server`: on the way out both wait
+        # for every client to hang up, and a client following a request would
+        # only do so when the request ends — which is after we've shut down.
+        await asyncio.Event().wait()
     finally:
+        server.close()
+        for task in list(handlers):
+            task.cancel()
+        await asyncio.gather(*handlers, return_exceptions=True)
+        await server.wait_closed()
         # Don't leave the socket file behind when we shut down
         path.unlink(missing_ok=True)

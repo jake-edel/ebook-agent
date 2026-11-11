@@ -253,6 +253,7 @@ def check_query(query: str) -> str:
     query = _check_line(query, "Search query").strip()
     if not query:
         raise ValueError("Search query is empty")
+    _check_length(f"@search {query}", "Search query")
     return query
 
 
@@ -262,7 +263,16 @@ def check_request(line: str) -> tuple[str, str]:
     m = _BOT_REQUEST_RE.match(line)
     if not m:
         raise ValueError(f"Not a book request (expected '!<bot> <file>'): {line!r}")
+    _check_length(line, "Request")
     return line, m.group("nick")
+
+
+# The server relays our line to the bots as
+# ":<nick>!<user>@<host> PRIVMSG #ebooks :<line>", and all of that must fit in
+# IRC's 512 bytes, or the end is cut off. irc3 doesn't refuse long lines: it
+# splits them into several messages. 350 leaves room for a long nick and host;
+# real result lines are under 200.
+MAX_LINE_BYTES = 350
 
 
 def _check_line(text: str, what: str) -> str:
@@ -270,6 +280,12 @@ def _check_line(text: str, what: str) -> str:
     if any(c in text for c in "\r\n\x00"):
         raise ValueError(f"{what} can't contain line breaks or NUL characters")
     return text
+
+
+def _check_length(line: str, what: str):
+    size = len(line.encode())
+    if size > MAX_LINE_BYTES:
+        raise ValueError(f"{what} is too long for IRC ({size} bytes, at most {MAX_LINE_BYTES})")
 
 
 def _filename_part(query: str) -> str:

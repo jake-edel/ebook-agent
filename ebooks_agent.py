@@ -3,6 +3,7 @@
 Runs in the foreground: it stays attached to the terminal and logs what it's
 doing (connection, each request, downloads, results) until Ctrl+C or SIGTERM.
 Searches come in through the Unix socket; see unix_socket.py.
+`--socket-path` prints where that is, for clients, and exits.
 """
 
 import argparse
@@ -14,7 +15,7 @@ from pathlib import Path
 
 from agent import EbooksAgent
 from config import Config, ConfigError, load_config
-from unix_socket import SocketUnavailableError, unix_socket
+from unix_socket import SocketUnavailableError, UnsafeSocketPathError, socket_path, unix_socket
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +46,9 @@ def _parse_args(argv=None) -> argparse.Namespace:
     )
     parser.add_argument("--config", type=Path, metavar="PATH",
                         help="config file to use (default: config.toml next to this script)")
+    parser.add_argument("--socket-path", action="store_true",
+                        help="print the Unix socket's path and exit (for clients, "
+                             "so they don't have to work it out themselves)")
     return parser.parse_args(argv)
 
 
@@ -71,17 +75,20 @@ async def _main(config: Config):
             loop.remove_signal_handler(sig)
         await agent.stop()
 
-# __name__ captures the module (entrypoint?) name
-# Detects whether this module was run as such
-# rather than imported into another. 
-if __name__ == "__main__":
-    # Python's build in logging library
-    # Minimum log level is INFO (DEBUG messages are suppress)
-    # Format defines a message template.
-    # Set up before loading the config, so config warnings are shown too
+def main(argv=None):
+    # Set up before loading the config, so config warnings are shown too.
+    # Logs go to stderr, which keeps --socket-path's stdout clean.
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    args = _parse_args(argv)
+    if args.socket_path:
+        try:
+            print(socket_path())
+        except UnsafeSocketPathError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        return
     try:
-        config = load_config(_parse_args().config)
+        config = load_config(args.config)
     except ConfigError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(2)
@@ -93,3 +100,7 @@ if __name__ == "__main__":
         # Startup failures — print the reason, not a traceback
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

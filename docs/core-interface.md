@@ -97,4 +97,4 @@ Settled on 2026-11-09.
 | 0.4 Progress reporting | `Downloads.receive(on_progress=…)` feeding `RequestUpdated` |
 | 0.5 Per-bot tracking | the plugin's list of waiting requests, with offer matching per decision 1 |
 | 0.6 Logging | unchanged, and separate from events |
-| 0.7 Rebuild the Unix socket | for now the old one-line protocol, on top of `search`/`request` and `wait`; the redesign is still to do |
+| 0.7 Rebuild the Unix socket | a JSON-lines protocol streaming each request's events (`to_dict`), the first transport over the core |

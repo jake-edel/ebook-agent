@@ -270,18 +270,32 @@ class EbooksAgent:
 
     def events(self) -> AsyncIterator[Event]:
         """A new, independent stream of events from now on. aclose() it to unsubscribe."""
-        queue: asyncio.Queue[Event] = asyncio.Queue()
-        self._subscribers.add(queue)
-        return self._stream(queue)
-
-    async def _stream(self, queue: asyncio.Queue[Event]):
-        try:
-            while True:
-                yield await queue.get()
-        finally:
-            self._subscribers.discard(queue)
+        return _EventStream(self._subscribers)
 
     def _emit(self, event: Event):
         # Unbounded queues: events are small and progress is rate-limited
         for queue in self._subscribers:
             queue.put_nowait(event)
+
+
+class _EventStream:
+    """One subscriber's events. Subscribed on creation, unsubscribed by aclose().
+
+    A class rather than an async generator: a generator's cleanup never runs
+    if it's closed before its first item, which would leave the queue
+    subscribed and filling up forever.
+    """
+
+    def __init__(self, subscribers: set[asyncio.Queue[Event]]):
+        self._subscribers = subscribers
+        self._queue: asyncio.Queue[Event] = asyncio.Queue()
+        subscribers.add(self._queue)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self) -> Event:
+        return await self._queue.get()
+
+    async def aclose(self):
+        self._subscribers.discard(self._queue)

@@ -200,38 +200,38 @@ def test_truncated_zip_member_leaves_no_partial_file(dl, downloads, make_zip):
 
 def test_socket_reports_unexpected_errors(runtime_dir):
     path = runtime_dir / "ebooks.sock"
-    agent = FakeAgent(bug=RuntimeError("boom"))
+    agent = FakeAgent(bug=RuntimeError("boom"), path="/tmp/ok.epub")
 
     async def go():
         task = await start_server(agent, path)
-        first = await ask(path, b"one\n")
+        first = await ask(path, {"cmd": "search", "query": "one"})
         # The server is still alive afterwards
-        agent.bug, agent.result = None, "/tmp/ok.epub"
-        second = await ask(path, b"two\n")
+        agent.bug = None
+        second = await ask(path, {"cmd": "search", "query": "two"})
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         return first, second
 
     first, second = asyncio.run(go())
-    assert first == b"error: internal error (see agent log)\n"
-    assert second == b"/tmp/ok.epub\n"
+    assert first == [{"type": "Error", "error": "internal error (see agent log)"}]
+    assert second[-1]["request"]["path"] == "/tmp/ok.epub"
 
 
 def test_socket_survives_oversized_line(runtime_dir):
     path = runtime_dir / "ebooks.sock"
-    agent = FakeAgent(result="/tmp/ok.epub")
+    agent = FakeAgent(path="/tmp/ok.epub")
 
     async def go():
         task = await start_server(agent, path)
         bad = await ask(path, b"x" * 200_000 + b"\n")
-        good = await ask(path, b"dune\n")
+        good = await ask(path, {"cmd": "search", "query": "dune"})
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         return bad, good
 
     bad, good = asyncio.run(go())
-    assert bad == b""
-    assert good == b"/tmp/ok.epub\n"
+    assert bad[0]["type"] == "Error" and "longer than" in bad[0]["error"]
+    assert good[-1]["request"]["path"] == "/tmp/ok.epub"
 
 
 # --- progress -----------------------------------------------------------------

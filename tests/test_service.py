@@ -184,6 +184,17 @@ def test_each_stream_gets_every_event_and_can_unsubscribe(agent):
     assert later.request.state is S.CANCELLED
 
 
+def test_closing_a_stream_before_reading_it_unsubscribes(agent):
+    # e.g. the socket subscribes, then the command turns out to be invalid
+    async def go():
+        stream = agent.events()
+        assert len(agent._subscribers) == 1
+        await stream.aclose()
+
+    asyncio.run(go())
+    assert agent._subscribers == set()
+
+
 def test_status_and_status_events(agent):
     async def go():
         events = agent.events()
