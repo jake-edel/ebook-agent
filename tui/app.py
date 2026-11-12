@@ -13,6 +13,7 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
+from textual.message import Message
 from textual.widgets import DataTable, Footer, Input, Label, OptionList, Static
 from textual.widgets.option_list import Option
 
@@ -45,7 +46,8 @@ _MOVE = [
 ]
 SEARCH_KEYS = _MOVE + [
     Binding("l,right", "select", "Open", show=False),  # as Enter
-    Binding("d", "app.dismiss_search", "Dismiss", show=False),  # a failed search
+    # Deletes a past search (after a y/n), or dismisses a failed one
+    Binding("d", "app.delete_search", "Delete", show=False),
 ]
 RESULT_KEYS = _MOVE + [
     Binding("h,left,escape", "app.focus_searches", "Back"),
@@ -73,6 +75,39 @@ class SearchList(OptionList):
 class SearchInput(Input):
     """The one-line search prompt. Printable keys are typed, not bindings."""
     BINDINGS = INPUT_KEYS
+
+
+class ConfirmPrompt(Static, can_focus=True):
+    """A y/n question in place of the search prompt. Only y says yes: any
+    other key, or focus moving away, says no. Keys don't reach anything else
+    while it's open."""
+
+    class Answered(Message):
+        def __init__(self, yes: bool):
+            super().__init__()
+            self.yes = yes
+
+    asking = False
+
+    def ask(self, question: str):
+        self.update(Text.assemble(question, " ", ("[y/n]", "bold")))
+        self.asking = True
+        self.display = True
+        self.focus()
+
+    def on_key(self, event):
+        event.stop()
+        event.prevent_default()
+        self._answer(event.key == "y")
+
+    def on_blur(self):
+        self._answer(False)
+
+    def _answer(self, yes: bool):
+        if not self.asking:
+            return
+        self.asking = False
+        self.post_message(self.Answered(yes))
 
 
 # The row between the epubs and the other formats
@@ -265,6 +300,11 @@ class EbooksApp(App):
         padding: 0 1;
         width: 1fr;
     }
+    ConfirmPrompt {
+        height: 1;
+        padding: 0 1;
+        background: $warning-muted;
+    }
     #status {
         height: 1;
         padding: 0 1;
@@ -294,6 +334,7 @@ class EbooksApp(App):
         self._online: frozenset[str] | None = None
         self._preview = None  # Timer for a pending preview
         self._focus_before_search = None  # to go back to when the prompt closes
+        self._deleting: PastSearch | None = None  # waiting for its y/n
         # The newest request for each line sent, whoever made it (us, or a
         # socket client like Neovim)
         self._latest: dict[str, Request] = {}
@@ -312,6 +353,7 @@ class EbooksApp(App):
         with Horizontal(id="prompt"):
             yield Label("@search")
             yield SearchInput(placeholder="title or author, Enter to search, Esc to cancel")
+        yield ConfirmPrompt()
         yield Static(id="status")
         yield Footer()
 
@@ -321,6 +363,7 @@ class EbooksApp(App):
         self.query_one(ResultsTable).border_title = "results"
 
         self.query_one("#prompt").display = False
+        self.query_one(ConfirmPrompt).display = False
 
         self.searches = list_searches(self.searches_dir)
         self._rebuild_sidebar()  # and shows the newest
@@ -440,6 +483,7 @@ class EbooksApp(App):
         with self.prevent(OptionList.OptionHighlighted):
             sidebar.set_options(Option(_entry_label(e), id=oid) for oid, e in self._entries.items())
         if not entries:
+            self._show_nothing()
             return
         if highlight in self._entries:
             index = sidebar.get_option_index(highlight)
@@ -508,16 +552,42 @@ class EbooksApp(App):
         self._live.pop(failed.id, None)
         self._rebuild_sidebar()
 
-    def action_dismiss_search(self):
+    def action_delete_search(self):
         option = self.query_one(SearchList).highlighted_option
         entry = self._entries.get(option.id) if option else None
-        if not isinstance(entry, Request):
-            return  # searches on disk are deleted by hand, for now
+        if entry is None:
+            return
+        if isinstance(entry, PastSearch):
+            self._deleting = entry
+            n = len(entry.results.items)
+            self.query_one(ConfirmPrompt).ask(
+                f'delete search "{entry.query}" ({entry.when:%b %d %H:%M}, '
+                f'{n} result{"" if n == 1 else "s"})?')
+            return
+        # This session's, with no file: nothing to lose, so no question
         if not entry.state.finished:
             self.note(f'search "{search_query(entry)}" is still running')
             return
         del self._live[entry.id]
         self._rebuild_sidebar()
+
+    def on_confirm_prompt_answered(self, event: ConfirmPrompt.Answered):
+        self.query_one(ConfirmPrompt).display = False
+        self.query_one(SearchList).focus()
+        search, self._deleting = self._deleting, None
+        if search is None:
+            return
+        if not event.yes:
+            self.note("not deleted")
+            return
+        try:
+            search.path.unlink(missing_ok=True)
+        except OSError as e:
+            self.note(f"can't delete {search.path.name}: {e}")
+            return
+        self.searches.remove(search)
+        self._rebuild_sidebar()
+        self.note(f'deleted search "{search.query}"')
 
     # --- search prompt --------------------------------------------------
 
@@ -552,11 +622,9 @@ class EbooksApp(App):
             self._show_live(entry)
             return
         search = entry
-        self.shown = search
-        table = self.query_one(ResultsTable)
         # Columns too, sized here from this search's rows: Textual's own
         # automatic widths don't follow a table that's been refilled
-        table.clear(columns=True)
+        table = self._clear_results(search)
         items = search.results.items
         # Epubs first, then everything else, each in the order the bot sent
         epubs = [i for i in items if i.ext == "epub"]
@@ -579,10 +647,6 @@ class EbooksApp(App):
         table.add_column("type", key="type", width=widths["type"])
         table.add_column(Text("size", justify="right"), key="size", width=widths["size"])
         table.add_column("title", key="title", width=widths["title"])
-        self._rows = {}
-        self._row_for_line = {}
-        self._rows_for_bot = {}
-        table.divider_row = None
         for item in epubs:
             self._add_row(table, item)
         if epubs and others:
@@ -609,17 +673,28 @@ class EbooksApp(App):
             parts.append(offline_summary(offline))
         return " · ".join(parts)
 
-    def _show_live(self, r: Request):
-        """A search with no results file: just how it's doing."""
-        self.shown = r
+    def _clear_results(self, shown: Entry | None) -> ResultsTable:
+        """Empty the results pane, columns too, for `shown`."""
+        self.shown = shown
         table = self.query_one(ResultsTable)
         table.clear(columns=True)
         self._rows = {}
         self._row_for_line = {}
         self._rows_for_bot = {}
         table.divider_row = None
+        return table
+
+    def _show_live(self, r: Request):
+        """A search with no results file: just how it's doing."""
+        table = self._clear_results(r)
         table.border_title = f"results: {search_query(r)}"
         table.border_subtitle = r.error if r.state is RequestState.FAILED else search_progress(r)
+
+    def _show_nothing(self):
+        """No searches at all, e.g. the last one was just deleted."""
+        table = self._clear_results(None)
+        table.border_title = "results"
+        table.border_subtitle = None
 
     def _add_row(self, table: ResultsTable, item: ResultItem):
         key = str(item.line_no)

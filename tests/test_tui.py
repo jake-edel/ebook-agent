@@ -25,6 +25,7 @@ from core import (
 )
 from tui.app import (
     DIVIDER,
+    ConfirmPrompt,
     OFFLINE_PIP,
     PREVIEW_DELAY,
     EbooksApp,
@@ -877,3 +878,80 @@ def test_offline_summary_names_at_most_three():
     from tui.app import offline_summary
     assert offline_summary(["a"]) == "1 bot offline (a)"
     assert offline_summary(["a", "b", "c", "d"]) == "4 bots offline (a, b, c, …)"
+
+
+# --- deleting past searches -----------------------------------------------------
+
+def test_d_asks_before_deleting_a_search(two_searches):
+    async def steps(app, pilot):
+        await pilot.press("d")
+        prompt = app.query_one(ConfirmPrompt)
+        return prompt.display, str(prompt.render()), app.focused
+
+    shown, question, focused = run_app(two_searches, steps)
+    assert shown
+    assert question == 'delete search "dune frank herbert" (Nov 09 09:15, 2 results)? [y/n]'
+    assert isinstance(focused, ConfirmPrompt)
+
+
+def test_y_deletes_the_search_and_its_file(two_searches):
+    async def steps(app, pilot):
+        await pilot.press("d", "y")
+        await pilot.pause()
+        return (sidebar(app), highlighted(app), app.shown.query, app.focused,
+                app.query_one(ConfirmPrompt).display, status(app))
+
+    entries, high, shown, focused, prompt_shown, bar = run_app(two_searches, steps)
+    assert [p.name for p in two_searches.iterdir()] == ["20261108-143005 warhammer.txt"]
+    assert [e[0] for e in entries] == ["warhammer"]
+    assert high == shown == "warhammer"  # the next one along, shown in the results
+    assert isinstance(focused, SearchList)
+    assert not prompt_shown
+    assert bar.endswith('deleted search "dune frank herbert"')
+
+
+@pytest.mark.parametrize("answer", ["n", "escape", "j", "d"])
+def test_anything_but_y_keeps_it(two_searches, answer):
+    async def steps(app, pilot):
+        await pilot.press("d", answer)
+        await pilot.pause()
+        return sidebar(app), app.focused, app.query_one(ConfirmPrompt).display, status(app)
+
+    entries, focused, prompt_shown, bar = run_app(two_searches, steps)
+    assert len(list(two_searches.iterdir())) == 2
+    assert [e[0] for e in entries] == ["dune frank herbert", "warhammer"]
+    assert isinstance(focused, SearchList) and not prompt_shown
+    assert bar.endswith("not deleted")
+
+
+@pytest.mark.parametrize("key", ["q", "s"])
+def test_other_keys_dont_act_while_asking(two_searches, key):
+    async def steps(app, pilot):
+        await pilot.press("d", key)
+        await pilot.pause()
+        return app.is_running, app.query_one("#prompt").display
+
+    running, search_prompt = run_app(two_searches, steps)
+    assert running and not search_prompt  # q didn't quit, s didn't open the search prompt
+
+
+def test_deleting_the_last_search(searches):
+    (searches / "20261109-091500 dune.txt").write_text(DUNE)
+
+    async def steps(app, pilot):
+        await pilot.press("d", "y")
+        await pilot.pause()
+        return sidebar(app), rows(app)
+
+    assert run_app(searches, steps) == ([], [])
+    assert list(searches.iterdir()) == []
+
+
+def test_a_file_already_gone_is_still_removed(two_searches):
+    async def steps(app, pilot):
+        (two_searches / "20261109-091500 dune frank herbert.txt").unlink()
+        await pilot.press("d", "y")
+        await pilot.pause()
+        return [e[0] for e in sidebar(app)]
+
+    assert run_app(two_searches, steps) == ["warhammer"]

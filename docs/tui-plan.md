@@ -129,6 +129,7 @@ Built in thin slices, each one usable on its own. Using each stage decides the n
 | 1 | Browse past searches from disk: searches list (newest first), results table, `j`/`k`, `Enter`/`l` in, `h`/`Esc` back, `q` quit. No IRC | done |
 | 2 | Go live: the TUI starts the agent and the socket, the status bar shows the connection, `Enter` on a result requests it. A state column on each row (`…`, `42%`, `✓`, `✗`) and the status bar (progress, bot replies, the saved path or the error) follow it, including requests made over the socket. `q` asks first if something's in flight | done |
 | 3 | Search from the TUI: `s` opens a one-line `@search` prompt (Enter sends, Esc cancels, a rejected query keeps it open with the reason). The search appears at the top of the sidebar at once, following its state (`queued`, `searching…`, `receiving 40%`), including searches made over the socket. Its results always open when they arrive, without taking focus from the prompt. A failed search stays in the sidebar with `✗` and its reason: Enter runs it again, `d` dismisses it | done |
+| — | Delete past searches: `d` on one in the sidebar asks `[y/n]` in place of the search prompt, and only `y` deletes its file (any other key, or focus moving away, says no; keys don't reach anything else meanwhile) | done |
 | 4 | Filter results: `/` narrows the table as you type, `Esc` clears | |
 | 5 | See what's happening: transfers (with cancel), downloads, the log. Where they live is decided by stages 2–4 | |
 | 6 | Polish from use: ~~offline bots greyed out~~ (done: a bot not in the channel has its rows dimmed with `○`, live, and the subtitle names them; Enter on one is refused; while not joined nobody counts as offline), sorting, `?` help, `gg`/`G`, the TUI as the default with `--headless` | |
@@ -141,4 +142,4 @@ Testing: each stage is tested headless with Textual's `run_test()` (`tests/test_
 
 1. **In-process or daemon from the start?** The recommendation is in-process first. Are there other scripts that need the same IRC connection at the same time as the TUI?
 2. **Key bindings.** Strict Vim (hjkl, `:` commands) with arrow keys also working, or closer to neo-tree's defaults?
-3. **Search history.** Every search is kept, and a repeat gets a new file. Should the sidebar cap what it shows (for example the last 50), or offer a way to delete old ones?
+3. **Search history.** Every search is kept, and a repeat gets a new file; `d` deletes one. Should the sidebar also cap what it shows (for example the last 50)?
