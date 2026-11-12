@@ -22,6 +22,7 @@ from core import (
     BotMessage,
     ConnectionState,
     Event,
+    MembersChanged,
     Request,
     RequestKind,
     RequestState,
@@ -161,6 +162,17 @@ def marker(r: Request | None) -> str:
             return "–"
 
 
+# After an offline bot's name. Its whole row is dimmed too.
+OFFLINE_PIP = "○"
+
+
+def offline_summary(bots: list[str]) -> str:
+    """For the results' subtitle: "2 bots offline (artemis_serv, Oatmeal)"."""
+    n = len(bots)
+    names = ", ".join(bots[:3]) + (", …" if n > 3 else "")
+    return f"{n} bot{'' if n == 1 else 's'} offline ({names})"
+
+
 # Can be requested again; anything else is in flight or already downloaded
 _RETRYABLE = (RequestState.FAILED, RequestState.CANCELLED)
 
@@ -276,6 +288,10 @@ class EbooksApp(App):
         self.shown: Entry | None = None
         self._rows: dict[str, ResultItem] = {}
         self._row_for_line: dict[str, str] = {}
+        self._rows_for_bot: dict[str, list[str]] = {}  # by lower-cased nick
+        # Who's in the channel, lower-cased, or None while we don't know (not
+        # joined): then no bot is shown as offline
+        self._online: frozenset[str] | None = None
         self._preview = None  # Timer for a pending preview
         self._focus_before_search = None  # to go back to when the prompt closes
         # The newest request for each line sent, whoever made it (us, or a
@@ -336,6 +352,9 @@ class EbooksApp(App):
             return
         if isinstance(event, StatusChanged):
             self._connection = describe_status(event.status)
+            self._members_changed(event.status.state)
+        elif isinstance(event, MembersChanged):
+            self._members_changed(self.agent.status().state)
         elif isinstance(event, RequestUpdated):
             r = event.request
             self._latest[r.line] = r
@@ -348,6 +367,27 @@ class EbooksApp(App):
             # Replies to requests; other messages to us wait for a log view
             self._note = f"{event.nick}: {event.text}"
         self._refresh_status()
+
+    def _members_changed(self, state: ConnectionState):
+        """Restyle the rows of the bots that came or went."""
+        before = self._online
+        self._online = self.agent.members() if state is ConnectionState.READY else None
+        if self._online == before:
+            return
+        table = self.query_one(ResultsTable)
+        for bot, keys in self._rows_for_bot.items():
+            was = before is not None and bot not in before
+            if was == self._is_offline(bot):
+                continue
+            for key in keys:
+                item = self._rows[key]
+                for column, value in zip(("bot", "type", "size", "title"), self._item_cells(item)):
+                    table.update_cell(key, column, value)
+        if isinstance(self.shown, PastSearch):
+            table.border_subtitle = self._subtitle(self.shown)
+
+    def _is_offline(self, bot: str) -> bool:
+        return self._online is not None and bot.lower() not in self._online
 
     def note(self, text: str):
         self._note = text
@@ -528,7 +568,8 @@ class EbooksApp(App):
         # Title last, so a long one is what gets cut off, not the size
         widths = {
             "state": 4,
-            "bot": width("bot", (i.bot for i in items)),
+            # Room for the pip after an offline bot
+            "bot": width("bot", (f"{i.bot} {OFFLINE_PIP}" for i in items)),
             "type": width("type", (i.ext or "" for i in items)),
             "size": 4,
             "title": width("title", (i.title for i in items)),
@@ -540,6 +581,7 @@ class EbooksApp(App):
         table.add_column("title", key="title", width=widths["title"])
         self._rows = {}
         self._row_for_line = {}
+        self._rows_for_bot = {}
         table.divider_row = None
         for item in epubs:
             self._add_row(table, item)
@@ -552,14 +594,20 @@ class EbooksApp(App):
             table.add_row(*(Text(c, style="dim") for c in cells), key=DIVIDER)
         for item in others:
             self._add_row(table, item)
-        r = search.results
         table.border_title = f"results: {search.query}"
+        table.border_subtitle = self._subtitle(search)
+
+    def _subtitle(self, search: PastSearch) -> str:
+        r = search.results
         parts = [f"{len(r.items)} results"]
         if r.lists_searched is not None:
             parts.append(f"{r.lists_searched} lists")
         if r.unparsed:
             parts.append(f"{len(r.unparsed)} not shown")  # non-standard lines, see results.py
-        table.border_subtitle = " · ".join(parts)
+        bots = dict.fromkeys(i.bot for i in r.items)  # in the order they appear
+        if offline := [b for b in bots if self._is_offline(b)]:
+            parts.append(offline_summary(offline))
+        return " · ".join(parts)
 
     def _show_live(self, r: Request):
         """A search with no results file: just how it's doing."""
@@ -568,6 +616,7 @@ class EbooksApp(App):
         table.clear(columns=True)
         self._rows = {}
         self._row_for_line = {}
+        self._rows_for_bot = {}
         table.divider_row = None
         table.border_title = f"results: {search_query(r)}"
         table.border_subtitle = r.error if r.state is RequestState.FAILED else search_progress(r)
@@ -576,9 +625,22 @@ class EbooksApp(App):
         key = str(item.line_no)
         self._rows[key] = item
         self._row_for_line[item.request] = key
-        size = Text(human_size(item.size_bytes), justify="right")
+        self._rows_for_bot.setdefault(item.bot.lower(), []).append(key)
         state = marker(self._latest.get(item.request))
-        table.add_row(state, item.bot, item.ext or "", size, item.title, key=key)
+        table.add_row(state, *self._item_cells(item), key=key)
+
+    def _item_cells(self, item: ResultItem) -> tuple[Text, ...]:
+        """A row's bot, type, size and title cells: dimmed if the bot is offline.
+        (The state column isn't: it's about our request, not the bot.)"""
+        offline = self._is_offline(item.bot)
+        style = "dim" if offline else ""
+        bot = f"{item.bot} {OFFLINE_PIP}" if offline else item.bot
+        return (
+            Text(bot, style=style),
+            Text(item.ext or "", style=style),
+            Text(human_size(item.size_bytes), style=style, justify="right"),
+            Text(item.title, style=style),
+        )
 
     def action_focus_searches(self):
         self.query_one(SearchList).focus()
@@ -592,6 +654,9 @@ class EbooksApp(App):
             self.note(f"already downloaded: {current.path}")
         elif current and current.state not in _RETRYABLE:
             self.note(f"already requested: {item.title}")
+        elif self._is_offline(item.bot):
+            # It would only wait out the offer timeout
+            self.note(f"{item.bot} isn't in {self.agent.status().channel} right now")
         else:
             try:
                 self.agent.request(item.request)  # its events update the row

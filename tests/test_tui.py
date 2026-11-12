@@ -16,6 +16,7 @@ from core import (
     AgentStatus,
     BotMessage,
     ConnectionState,
+    MembersChanged,
     Request,
     RequestKind,
     RequestState,
@@ -24,6 +25,7 @@ from core import (
 )
 from tui.app import (
     DIVIDER,
+    OFFLINE_PIP,
     PREVIEW_DELAY,
     EbooksApp,
     ResultsTable,
@@ -110,6 +112,16 @@ class FakeAgent:
         self._ids = itertools.count(1)
         self._queues: list[asyncio.Queue] = []
         self.stopped = False
+        # Who's in the channel; every bot the tests' searches use, by default
+        self.online = {"bsk", "oatmeal", "artemis_serv", "ashurbanipal"}
+
+    def members(self):
+        # Like the real agent: nobody, unless joined
+        return frozenset(self.online) if self.state is ConnectionState.READY else frozenset()
+
+    def set_members(self, *nicks):
+        self.online = {n.lower() for n in nicks}
+        self.emit(MembersChanged())
 
     def status(self):
         return AgentStatus(state=self.state, server="irc.example.net", nick="me", channel="#ebooks")
@@ -190,7 +202,15 @@ def state_cells(app):
 def rows(app):
     """The results table's rows, without the divider."""
     table = app.query_one(ResultsTable)
-    return [table.get_row(r.key) for r in table.ordered_rows if r.key.value != DIVIDER]
+    return [[str(c) for c in table.get_row(r.key)]
+            for r in table.ordered_rows if r.key.value != DIVIDER]
+
+
+def dimmed_bots(app):
+    """The bot cell of each dimmed row, without the divider."""
+    table = app.query_one(ResultsTable)
+    cells = [table.get_row(r.key) for r in table.ordered_rows if r.key.value != DIVIDER]
+    return [str(row[1]) for row in cells if all(c.style == "dim" for c in row[1:])]
 
 
 def has_divider(app):
@@ -770,3 +790,90 @@ def test_first_search_with_none_on_disk(searches):
         return [e[0] for e in sidebar(app)], app.shown.query
 
     assert run_app(searches, steps, agent=agent) == (["ac/dc"], "ac/dc")
+
+
+# --- offline bots -------------------------------------------------------------
+
+def test_offline_bots_are_dimmed_with_a_pip(two_searches):
+    agent = FakeAgent()
+    agent.online = {"bsk"}  # not Oatmeal
+
+    async def steps(app, pilot):
+        table = app.query_one(ResultsTable)
+        return [r[1] for r in rows(app)], dimmed_bots(app), table.border_subtitle
+
+    bots, dimmed, subtitle = run_app(two_searches, steps, agent=agent)
+    assert bots == ["Bsk", f"Oatmeal {OFFLINE_PIP}"]
+    assert dimmed == [f"Oatmeal {OFFLINE_PIP}"]
+    assert subtitle == "2 results · 14 lists · 1 bot offline (Oatmeal)"
+
+
+def test_rows_follow_bots_coming_and_going(two_searches):
+    agent = FakeAgent()
+
+    async def steps(app, pilot):
+        table = app.query_one(ResultsTable)
+        agent.set_members("Oatmeal")
+        await pilot.pause()
+        gone = dimmed_bots(app), table.border_subtitle
+        agent.set_members("Oatmeal", "Bsk")
+        await pilot.pause()
+        return gone, (dimmed_bots(app), table.border_subtitle)
+
+    gone, back = run_app(two_searches, steps, agent=agent)
+    assert gone == ([f"Bsk {OFFLINE_PIP}"], "2 results · 14 lists · 1 bot offline (Bsk)")
+    assert back == ([], "2 results · 14 lists")
+
+
+def test_nobody_is_offline_while_not_joined(two_searches):
+    # members() is empty then: that means "don't know", not "all gone"
+    agent = FakeAgent()
+    agent.online = {"bsk"}
+
+    async def steps(app, pilot):
+        before = dimmed_bots(app)
+        agent.set_state(ConnectionState.DISCONNECTED)
+        await pilot.pause()
+        during = dimmed_bots(app), app.query_one(ResultsTable).border_subtitle
+        agent.set_state(ConnectionState.READY)
+        await pilot.pause()
+        return before, during, dimmed_bots(app)
+
+    before, during, after = run_app(two_searches, steps, agent=agent)
+    assert before == after == [f"Oatmeal {OFFLINE_PIP}"]
+    assert during == ([], "2 results · 14 lists")
+
+
+def test_switching_searches_keeps_bots_offline(two_searches):
+    agent = FakeAgent()
+    agent.online = {"bsk"}
+
+    async def steps(app, pilot):
+        await pilot.press("j")
+        await settle(pilot)
+        return dimmed_bots(app), app.query_one(ResultsTable).border_subtitle
+
+    dimmed, subtitle = run_app(two_searches, steps, agent=agent)
+    assert dimmed == [f"artemis_serv {OFFLINE_PIP}"] * 2
+    assert subtitle == "8 results · 14 lists · 2 not shown · 1 bot offline (artemis_serv)"
+
+
+def test_offline_bots_cant_be_requested(two_searches):
+    agent = FakeAgent()
+    agent.online = {"bsk"}
+
+    async def steps(app, pilot):
+        await pilot.press("enter", "j", "enter")  # into the results, the Oatmeal mobi
+        await pilot.pause()
+        return agent.made, state_cells(app), status(app)
+
+    made, states, bar = run_app(two_searches, steps, agent=agent)
+    assert made == []
+    assert states == ["", ""]
+    assert bar == "#ebooks as me · Oatmeal isn't in #ebooks right now"
+
+
+def test_offline_summary_names_at_most_three():
+    from tui.app import offline_summary
+    assert offline_summary(["a"]) == "1 bot offline (a)"
+    assert offline_summary(["a", "b", "c", "d"]) == "4 bots offline (a, b, c, …)"

@@ -131,7 +131,7 @@ Built in thin slices, each one usable on its own. Using each stage decides the n
 | 3 | Search from the TUI: `s` opens a one-line `@search` prompt (Enter sends, Esc cancels, a rejected query keeps it open with the reason). The search appears at the top of the sidebar at once, following its state (`queued`, `searching…`, `receiving 40%`), including searches made over the socket. Its results always open when they arrive, without taking focus from the prompt. A failed search stays in the sidebar with `✗` and its reason: Enter runs it again, `d` dismisses it | done |
 | 4 | Filter results: `/` narrows the table as you type, `Esc` clears | |
 | 5 | See what's happening: transfers (with cancel), downloads, the log. Where they live is decided by stages 2–4 | |
-| 6 | Polish from use: offline bots greyed out (`members()`), sorting, `?` help, `gg`/`G`, the TUI as the default with `--headless` | |
+| 6 | Polish from use: ~~offline bots greyed out~~ (done: a bot not in the channel has its rows dimmed with `○`, live, and the subtitle names them; Enter on one is refused; while not joined nobody counts as offline), sorting, `?` help, `gg`/`G`, the TUI as the default with `--headless` | |
 
 Deferred until something needs them: `:` commands, a mode system, several buffers or tabs, keymaps from config, the daemon split.
 
