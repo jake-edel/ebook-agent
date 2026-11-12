@@ -10,11 +10,19 @@ A results file is a short header followed by one line per match:
     !artemis_serv f73222c7950c | Warhammer 40K_ The Purging of Kadillus - Gav Thorpe.mobi ::INFO:: 5.09MB
 
 Each result line starts with `!<bot>`, and the request to send back to the
-channel is everything before ` ::INFO::`.
+channel is that line without the details the bot adds after the file. The
+bots that serve results don't agree on a format; these are the ones seen:
 
-Only that standard `::INFO::` format is parsed. Lines in other formats (e.g.
-the Ashurbanipal bot's) are deliberately not turned into results — they're
-kept verbatim in `SearchResults.unparsed`, and the original file stays on disk.
+    !Bsk Title.epub ::INFO:: 2.19MB                       SearchBot's own
+    !Firebound %037DFABE5B8F% Title.epub  ::INFO:: 676.97 KB
+    !Ook Title (pdf).rar  ::INFO:: 2MB ::HASH:: 24b4ef36dc21f3ed
+    !Horla Title.epub                                     no details at all
+    !Ashurbanipal <id> - Author - Title [eng]  (EPUB) 3.0 MB - [tags]
+
+so every `!<bot> <something>` line is a result: `::INFO::` and what follows
+it, or a trailing `(EXT) size - [tags]`, are details, and the rest is the
+request. Lines after the header that don't start with `!<bot>` are kept
+verbatim in `SearchResults.unparsed`, and the original file stays on disk.
 """
 
 import re
@@ -27,8 +35,17 @@ _SUMMARY_RE = re.compile(
     re.IGNORECASE,
 )
 
-# "!<bot> <name> ::INFO:: <size>" — size optional
-_RESULT_RE = re.compile(r"^!(?P<bot>\S+) (?P<name>.*?\S) ::INFO::(?: (?P<info>.*?))?\s*$")
+# "!<bot> <the rest>"
+_RESULT_RE = re.compile(r"^!(?P<bot>\S+) +(?P<rest>\S.*?)\s*$")
+
+# "<name> ::INFO:: <size> ::HASH:: <hash>": size and hash optional, any spacing
+_INFO_RE = re.compile(r"\s*::INFO::\s*(?P<info>.*)$")
+
+# Ashurbanipal's details: "<name>  (EPUB) 3.0 MB - [Fantasy, Gaming]", tags optional
+_TAIL_RE = re.compile(
+    r"\s+\((?P<ext>[A-Za-z0-9]{2,5})\)\s+(?P<size>\d+(?:\.\d+)?\s*[KMGT]?i?B)(?:\s+-\s+\[.*\])?$",
+    re.IGNORECASE,
+)
 
 # A size like "2.19MB", "680.86KB", "44.7 MB", "1 GiB"
 _SIZE_RE = re.compile(r"(?P<num>\d+(?:\.\d+)?)\s*(?P<unit>[KMGT]i?B|B)", re.IGNORECASE)
@@ -37,8 +54,12 @@ _UNITS = {"B": 1, "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
 # File extension at the end of a filename: "Penitent (Retail).epub" -> "epub"
 _EXT_RE = re.compile(r"\.(?P<ext>[A-Za-z0-9]{2,5})$")
 
-# "f73222c7950c | Real Title.mobi" — some bots prefix the name with a file hash
-_HASH_PREFIX_RE = re.compile(r"^\S+ \| (?P<title>.+)$")
+# Ids some bots put before the name; kept in the request, not the title:
+#   "f73222c7950c | Real Title.mobi"   artemis_serv
+#   "%037DFABE5B8F% Real Title.epub"   Firebound
+_HASH_PREFIX_RE = re.compile(r"^(?:\S+ \||%[0-9A-Fa-f]+%) +(?P<title>.+)$")
+# "ckH79Mt/Nwe2A0uyM0FCew - Author - Title": Ashurbanipal's (base64, 22 chars)
+_ID_PREFIX_RE = re.compile(r"^[A-Za-z0-9+/]{22} - (?P<title>.+)$")
 
 
 @dataclass(frozen=True)
@@ -70,7 +91,7 @@ class SearchResults:
     """Non-empty lines before the first result."""
     items: tuple[ResultItem, ...]
     unparsed: tuple[str, ...]
-    """Non-empty lines after the header that aren't standard results, kept verbatim."""
+    """Non-empty lines after the header that aren't results, kept verbatim."""
 
 
 def parse_size(text: str) -> int | None:
@@ -83,15 +104,27 @@ def parse_size(text: str) -> int | None:
 
 
 def parse_line(line: str, line_no: int = 0) -> ResultItem | None:
-    """Parse one standard result line. Returns None for anything else."""
+    """Parse one result line ("!<bot> ..."). Returns None for anything else."""
     m = _RESULT_RE.match(line)
     if not m:
         return None
-    bot, name = m.group("bot"), m.group("name")
+    bot, name = m.group("bot"), m.group("rest")
 
-    # Drop a "<hash> | " prefix from the display title (the request keeps it)
-    title = (h.group("title") if (h := _HASH_PREFIX_RE.match(name)) else name)
-    ext = None
+    # Split off the details, if any
+    size = ext = None
+    title_re = _HASH_PREFIX_RE
+    if info := _INFO_RE.search(name):
+        name = name[: info.start()]
+        size = info.group("info").split("::")[0]  # not the ::HASH::
+    elif tail := _TAIL_RE.search(name):
+        name = name[: tail.start()]
+        size, ext = tail.group("size"), tail.group("ext").lower()
+        title_re = _ID_PREFIX_RE
+    if not name:
+        return None  # e.g. "!Bsk ::INFO:: 1MB": nothing to request
+
+    # Drop an id before the name from the display title (the request keeps it)
+    title = (h.group("title") if (h := title_re.match(name)) else name)
     if e := _EXT_RE.search(title):
         title, ext = title[: e.start()], e.group("ext").lower()
 
@@ -100,7 +133,7 @@ def parse_line(line: str, line_no: int = 0) -> ResultItem | None:
         request=f"!{bot} {name}",
         title=title.strip(),
         ext=ext,
-        size_bytes=parse_size(m.group("info") or ""),
+        size_bytes=parse_size(size or ""),
         raw=line.rstrip("\r\n"),
         line_no=line_no,
     )

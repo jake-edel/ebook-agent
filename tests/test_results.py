@@ -31,10 +31,8 @@ def test_summary_parsed_from_header(results):
 def test_header_and_items_separated(results):
     assert len(results.header) == 5
     assert results.header[0].startswith("Search results from SearchBot")
-    assert len(results.items) == 8
-    # Non-standard lines (Ashurbanipal) are kept verbatim, not parsed
-    assert len(results.unparsed) == 2
-    assert all(line.startswith("!Ashurbanipal ") for line in results.unparsed)
+    assert len(results.items) == 10  # Ashurbanipal's two included
+    assert results.unparsed == ()
 
 
 def test_line_numbers_point_into_source(results):
@@ -61,7 +59,9 @@ def test_info_line(results):
 
 
 def test_info_requests_are_line_before_info_marker(results):
-    for item in results.items:
+    info_lines = [i for i in results.items if "::INFO::" in i.raw]
+    assert len(info_lines) == 8
+    for item in info_lines:
         assert item.request == item.raw.split(" ::INFO::")[0]
 
 
@@ -84,21 +84,66 @@ def test_kb_size(results):
     assert by_title(results, "Rose in Darkness").size_bytes == round(680.86 * 1024)
 
 
-# --- non-standard lines ------------------------------------------------------
+# --- other bots' formats ------------------------------------------------------
+#
+# Real lines from real searches: each bot's own take on the format
+
+@pytest.mark.parametrize("line, req, title, ext, size", [
+    # Two spaces before ::INFO::, and a size with a space in it
+    ("!peapod George Orwell - 1984.epub  ::INFO:: 270.54KB",
+     "!peapod George Orwell - 1984.epub", "George Orwell - 1984", "epub", round(270.54 * 1024)),
+    ("!Wench George Orwell - Animal Farm.pdf  ::INFO:: 233.4KB",
+     "!Wench George Orwell - Animal Farm.pdf", "George Orwell - Animal Farm", "pdf", round(233.4 * 1024)),
+    # A ::HASH:: after the size
+    ("!Ook The Cambridge Companion to George Orwell (2007) - John Rodden (pdf).rar  ::INFO:: 944KB ::HASH:: 4407b386b7712e7d",
+     "!Ook The Cambridge Companion to George Orwell (2007) - John Rodden (pdf).rar",
+     "The Cambridge Companion to George Orwell (2007) - John Rodden (pdf)", "rar", 944 * 1024),
+    ("!Pondering-Ebooks2 George Orwell - 1984 (v5.0) (epub).rar  ::INFO:: 2MB ::HASH:: e2e1656a49f7cbb",
+     "!Pondering-Ebooks2 George Orwell - 1984 (v5.0) (epub).rar",
+     "George Orwell - 1984 (v5.0) (epub)", "rar", 2 * 1024**2),
+    # A %hash% before the name: kept in the request, not the title
+    ("!Firebound %037DFABE5B8F% George Orwell - Homage to Catalonia (Retail).epub  ::INFO:: 676.97 KB",
+     "!Firebound %037DFABE5B8F% George Orwell - Homage to Catalonia (Retail).epub",
+     "George Orwell - Homage to Catalonia (Retail)", "epub", round(676.97 * 1024)),
+    # No details at all: the whole line is the request
+    ("!Horla George Orwell - 1984 (Penguin) (epub).epub",
+     "!Horla George Orwell - 1984 (Penguin) (epub).epub", "George Orwell - 1984 (Penguin) (epub)", "epub", None),
+    ("!Dumbledore Mark Z Danielewski - House of Leaves (lrf).epub",
+     "!Dumbledore Mark Z Danielewski - House of Leaves (lrf).epub",
+     "Mark Z Danielewski - House of Leaves (lrf)", "epub", None),
+    # Ashurbanipal: an id before the name, "(EXT) size - [tags]" after it
+    ("!Ashurbanipal e+dKfyTbsTh+hhAWPdJoxA - David Ryan - George Orwell on Screen [eng]  (EPUB) 3.0 MB - [Film, Television]",
+     "!Ashurbanipal e+dKfyTbsTh+hhAWPdJoxA - David Ryan - George Orwell on Screen [eng]",
+     "David Ryan - George Orwell on Screen [eng]", "epub", round(3.0 * 1024**2)),
+    ("!Ashurbanipal wLzfYssqwXcipxVs8UQztw - Games-Workshop - Soul Wars [eng]  (PDF) 44.7 MB",
+     "!Ashurbanipal wLzfYssqwXcipxVs8UQztw - Games-Workshop - Soul Wars [eng]",
+     "Games-Workshop - Soul Wars [eng]", "pdf", round(44.7 * 1024**2)),
+    ("!Ashurbanipal A2gYmSoq1wqhdVThRqtCjA - George Orwell - Essays (audiobook)  (M4B) 1.3 GB - [Audiobook]",
+     "!Ashurbanipal A2gYmSoq1wqhdVThRqtCjA - George Orwell - Essays (audiobook)",
+     "George Orwell - Essays (audiobook)", "m4b", round(1.3 * 1024**3)),
+])
+def test_other_formats(line, req, title, ext, size):
+    item = parse_line(line)
+    assert (item.request, item.title, item.ext, item.size_bytes) == (req, title, ext, size)
+
+
+def test_id_like_words_are_only_stripped_in_ashurbanipals_format():
+    # 22 letters then " - " is just a title, without the "(EXT) size" details
+    item = parse_line("!Horla Abcdefghijklmnopqrstuv - Some Title.epub")
+    assert item.title == "Abcdefghijklmnopqrstuv - Some Title"
+
 
 @pytest.mark.parametrize("line", [
-    "!Ashurbanipal icrJKsa/adw/KYa0ACzKWg - Games Workshop Limited - Warhammer: Tomb Kings [eng]  (PDF) 28.0 MB - [Fantasy]",
-    "!SomeBot Some Book.epub",            # no ::INFO:: marker
-    "!SomeBot Some Book.epub ::INFO",     # malformed marker
+    "!Bsk ::INFO:: 1MB",  # details, but nothing to request
+    "!Bsk  ::INFO::",
 ])
-def test_lines_without_info_marker_not_parsed(line):
+def test_lines_with_only_details_not_parsed(line):
     assert parse_line(line) is None
 
 
-def test_unparsed_lines_preserved_verbatim(results):
-    raw = FIXTURE.read_text().splitlines()
-    for line in results.unparsed:
-        assert line in raw
+def test_malformed_info_marker_is_part_of_the_name():
+    item = parse_line("!SomeBot Some Book.epub ::INFO")
+    assert item.request == "!SomeBot Some Book.epub ::INFO"
 
 
 # --- edge cases ----------------------------------------------------------------
@@ -161,8 +206,8 @@ def test_non_utf8_file_still_loads(tmp_path):
 
 
 def test_header_ends_at_first_bot_line_even_if_unparseable():
-    text = 'Searched 1 lists for "x" , found 2 matches.\n!Odd format line\ntrailer\n!Bsk A.epub ::INFO:: 1MB\n'
+    text = 'Searched 1 lists for "x" , found 2 matches.\n!Bsk ::INFO:: 1MB\ntrailer\n!Bsk A.epub ::INFO:: 1MB\n'
     r = parse_results(text)
     assert r.header == ('Searched 1 lists for "x" , found 2 matches.',)
-    assert r.unparsed == ("!Odd format line", "trailer")
+    assert r.unparsed == ("!Bsk ::INFO:: 1MB", "trailer")
     assert [i.title for i in r.items] == ["A"]

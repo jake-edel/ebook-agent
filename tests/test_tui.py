@@ -247,8 +247,8 @@ def test_moving_through_searches_previews_them(two_searches):
         return after_j, app.shown.query
 
     (query, count, subtitle), back = run_app(two_searches, steps)
-    assert (query, count) == ("warhammer", 8)
-    assert subtitle == "8 results · 14 lists · 2 not shown"
+    assert (query, count) == ("warhammer", 10)
+    assert subtitle == "10 results · 14 lists"
     assert back == "dune frank herbert"
 
 
@@ -320,9 +320,10 @@ def test_epubs_first_then_a_divider_then_the_rest(two_searches):
 
     shown, divider_row, label = run_app(two_searches, steps)
     # The fixture lists two artemis_serv mobis first; each group keeps the bot's order
-    assert shown == [("Bsk", "epub")] * 5 + [("artemis_serv", "mobi")] * 2 + [("Bsk", "mobi")]
+    assert shown == ([("Bsk", "epub")] * 5 + [("artemis_serv", "mobi")] * 2
+                     + [("Ashurbanipal", "pdf")] * 2 + [("Bsk", "mobi")])
     assert divider_row == 5
-    assert label.startswith("── other formats (3) ──")
+    assert label.startswith("── other formats (5) ──")
 
 
 @pytest.mark.parametrize("ext", ["epub", "mobi"])
@@ -847,7 +848,7 @@ def test_nobody_is_offline_while_not_joined(two_searches):
 
 def test_switching_searches_keeps_bots_offline(two_searches):
     agent = FakeAgent()
-    agent.online = {"bsk"}
+    agent.online = {"bsk", "ashurbanipal"}
 
     async def steps(app, pilot):
         await pilot.press("j")
@@ -856,7 +857,7 @@ def test_switching_searches_keeps_bots_offline(two_searches):
 
     dimmed, subtitle = run_app(two_searches, steps, agent=agent)
     assert dimmed == [f"artemis_serv {OFFLINE_PIP}"] * 2
-    assert subtitle == "8 results · 14 lists · 2 not shown · 1 bot offline (artemis_serv)"
+    assert subtitle == "10 results · 14 lists · 1 bot offline (artemis_serv)"
 
 
 def test_offline_bots_cant_be_requested(two_searches):
