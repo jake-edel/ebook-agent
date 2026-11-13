@@ -102,6 +102,8 @@ It connects to IRC and browses your past searches in `searches/`. Move with `j`/
 
 Every book requested this session, from the TUI or over the socket, is listed under BOOKS at the top of the sidebar, newest first: `…` waiting, `⇣` arriving, `⇢` being moved by the hook, `✓` done, `⚠` the hook failed (the book is still in `downloads/`), `✗` failed. Highlighting one shows its details in the main pane, with the hook's outcome and what the bot said. `d` dismisses a finished one from the list (nothing on disk is touched). The list isn't kept between sessions.
 
+`Tab` switches to the log, full screen, and back: everything that goes to `agent.log`, as it happens (what was sent, what bots said to you, DCC offers including refused ones, the hook's output). `j`/`k`, `gg`/`G`; it follows new lines while you're at the bottom. It only has this session: earlier ones are in `agent.log`.
+
 `q` quits, and asks first if a request is still in progress or a book is still being moved. Quitting waits for a running hook to finish, rather than killing it partway.
 
 The TUI serves the Unix socket too, so socket clients keep working while it's open (their requests show up in the TUI). It can't run beside `ebooks_agent.py`. What's next: see [`docs/tui-plan.md`](docs/tui-plan.md).

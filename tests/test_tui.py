@@ -3,6 +3,9 @@
 import asyncio
 import dataclasses
 import itertools
+import logging
+import re
+import threading
 import os
 import shutil
 import time
@@ -39,6 +42,7 @@ from tui.app import (
     marker,
 )
 from tui.library import list_searches
+from tui.log import LogView, record_parts
 
 S = RequestState
 
@@ -929,15 +933,16 @@ def test_anything_but_y_keeps_it(two_searches, answer):
     assert bar.endswith("not deleted")
 
 
-@pytest.mark.parametrize("key", ["q", "s"])
+@pytest.mark.parametrize("key", ["q", "s", "tab"])
 def test_other_keys_dont_act_while_asking(two_searches, key):
     async def steps(app, pilot):
         await pilot.press("d", key)
         await pilot.pause()
-        return app.is_running, app.query_one("#prompt").display
+        return app.is_running, app.query_one("#prompt").display, app.query_one(LogView).display
 
-    running, search_prompt = run_app(two_searches, steps)
-    assert running and not search_prompt  # q didn't quit, s didn't open the search prompt
+    running, search_prompt, log_open = run_app(two_searches, steps)
+    # q didn't quit, s didn't open the search prompt, tab didn't open the log
+    assert running and not search_prompt and not log_open
 
 
 def test_deleting_the_last_search(searches):
@@ -1272,3 +1277,174 @@ def test_both_kinds_of_work_in_the_quit_question(two_searches):
 
     assert run_app(two_searches, steps, agent=agent).endswith(
         "1 request in progress, 1 book still moving: press q again to quit and cancel")
+
+
+# --- the log ----------------------------------------------------------------------
+
+def log_lines(app):
+    """What the log view shows, line by line."""
+    return [strip.text.rstrip() for strip in app.query_one(LogView).lines]
+
+
+def test_tab_switches_to_the_log_and_back(two_searches):
+    async def steps(app, pilot):
+        await pilot.press("enter")  # into the results first
+        await pilot.press("tab")
+        log_view = app.query_one(LogView)
+        opened = (log_view.display, app.query_one("#main").display, app.focused is log_view)
+        await pilot.press("tab")
+        return opened, log_view.display, app.query_one("#main").display, app.focused
+
+    (log_shown, main_shown, focused), log_after, main_after, back = run_app(two_searches, steps)
+    assert log_shown and not main_shown and focused  # full screen
+    assert not log_after and main_after
+    assert isinstance(back, ResultsTable)  # where it was
+
+
+def test_esc_also_leaves_the_log(two_searches):
+    async def steps(app, pilot):
+        await pilot.press("tab", "escape")
+        return app.query_one(LogView).display, app.focused
+
+    log_shown, focused = run_app(two_searches, steps)
+    assert not log_shown and isinstance(focused, SearchList)
+
+
+def test_the_log_shows_what_the_log_file_gets(two_searches):
+    async def steps(app, pilot):
+        log = logging.getLogger("server.agent")
+        log.info("Connected to irc.example.net, joining #ebooks")
+        log.warning("Hook exited with status 23 for Dune.epub:\nrsync: connection refused")
+        try:
+            raise ValueError("boom")
+        except ValueError:
+            log.exception("Request failed unexpectedly")
+        logging.getLogger("server.dcc").debug("not at INFO: not shown")
+        await pilot.press("tab")
+        await pilot.pause()
+        return log_lines(app)
+
+    lines = run_app(two_searches, steps)
+    text = "\n".join(lines)
+    assert re.search(r"^\d\d:\d\d:\d\d INFO  Connected to irc.example.net, joining #ebooks$",
+                     text, re.M)
+    # Continuation lines line up under the message, not the time
+    indent = " " * len("20:14:03 WARN  ")
+    assert re.search(r"^\d\d:\d\d:\d\d WARN  Hook exited with status 23 for Dune.epub:$", text, re.M)
+    assert indent + "rsync: connection refused" in lines
+    assert re.search(r"ERROR Request failed unexpectedly\n {15}Traceback", text)
+    assert indent + "ValueError: boom" in lines
+    assert "not shown" not in text
+
+
+def test_levels_are_coloured():
+    def record(level):
+        return logging.LogRecord("x", level, __file__, 1, "msg", None, None)
+
+    def styles(level):
+        _, level_text, message = record_parts(record(level))
+        return str(level_text.style), str(message.style)
+
+    assert styles(logging.WARNING) == ("yellow", "yellow")
+    assert styles(logging.ERROR) == ("red", "red")
+    assert styles(logging.INFO) == ("dim", "")
+
+
+def test_records_from_other_threads_arrive(two_searches):
+    async def steps(app, pilot):
+        # e.g. zip extraction, which runs in a thread
+        thread = threading.Thread(
+            target=lambda: logging.getLogger("server.dcc").info("Extracted Dune.epub"))
+        thread.start()
+        thread.join()
+        await pilot.press("tab")
+        await pilot.pause()
+        return log_lines(app)
+
+    assert any(line.endswith("INFO  Extracted Dune.epub") for line in run_app(two_searches, steps))
+
+
+def test_the_log_follows_new_lines_only_at_the_bottom(two_searches):
+    log = logging.getLogger("server.agent")
+
+    async def steps(app, pilot):
+        view = app.query_one(LogView)
+        await pilot.press("tab")
+        for i in range(100):
+            log.info("line %d", i)
+        await pilot.pause()
+        following = view.is_vertical_scroll_end
+        await pilot.press("k", "k", "k")
+        await pilot.pause()
+        scrolled_to = view.scroll_y
+        log.info("while reading")
+        await pilot.pause()
+        stayed = view.scroll_y == scrolled_to
+        await pilot.press("G")
+        log.info("after G")
+        await pilot.pause()
+        return following, stayed, view.is_vertical_scroll_end, log_lines(app)[-1]
+
+    following, stayed, back_at_end, last = run_app(two_searches, steps)
+    assert following
+    assert stayed  # reading further up isn't interrupted
+    assert back_at_end and last.endswith("after G")
+
+
+def test_gg_goes_to_the_top(two_searches):
+    log = logging.getLogger("server.agent")
+
+    async def steps(app, pilot):
+        view = app.query_one(LogView)
+        await pilot.press("tab")
+        for i in range(100):
+            log.info("line %d", i)
+        await pilot.pause()
+        await pilot.press("g", "k", "g")  # not gg: something in between
+        await pilot.pause()
+        not_gg = view.scroll_y
+        await pilot.press("g", "g")
+        await pilot.pause()
+        return not_gg, view.scroll_y
+
+    not_gg, after_gg = run_app(two_searches, steps)
+    assert not_gg > 0 and after_gg == 0
+
+
+def test_results_arriving_while_the_log_is_open_dont_close_it(two_searches):
+    agent = FakeAgent()
+
+    async def steps(app, pilot):
+        await pilot.press("s", *"ac/dc", "enter")
+        await pilot.press("tab")
+        finish_search(agent, agent.requests()[0], two_searches)
+        await pilot.pause()
+        reading = (app.query_one(LogView).display, isinstance(app.focused, LogView))
+        await pilot.press("tab")
+        return reading, app.focused, app.shown.query
+
+    (log_shown, in_log), focused, shown = run_app(two_searches, steps, agent=agent)
+    assert log_shown and in_log
+    assert isinstance(focused, ResultsTable) and shown == "ac/dc"  # they're waiting for you
+
+
+def test_searching_from_the_log_comes_back_to_it(two_searches):
+    async def steps(app, pilot):
+        await pilot.press("tab", "s", *"dune", "enter")
+        await pilot.pause()
+        return app.focused, app.query_one(LogView).display
+
+    focused, log_shown = run_app(two_searches, steps)
+    assert isinstance(focused, LogView) and log_shown
+
+
+def test_the_handler_goes_when_the_app_does(two_searches):
+    root = logging.getLogger()
+    level, handlers = root.level, list(root.handlers)
+
+    async def steps(app, pilot):
+        return root.getEffectiveLevel()
+
+    during = run_app(two_searches, steps)
+    assert during == logging.INFO
+    assert root.level == level and root.handlers == handlers

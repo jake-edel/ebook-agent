@@ -1,4 +1,5 @@
-"""The TUI app: search, browse past searches on disk, request books, and follow them.
+"""The TUI app: search, browse past searches on disk, request books, follow
+them, and read the log.
 
 The app runs the agent (and the Unix socket, so socket clients keep
 working while it's open) on Textual's event loop, and talks to it only
@@ -38,6 +39,7 @@ from results import ResultItem, parse_line
 from server.unix_socket import SocketUnavailableError, unix_socket
 
 from .library import PastSearch, list_searches, load_search
+from .log import LogHandler, LogView
 
 # --- keys -------------------------------------------------------------------
 #
@@ -57,6 +59,10 @@ SEARCH_KEYS = _MOVE + [
 RESULT_KEYS = _MOVE + [
     Binding("h,left,escape", "app.focus_searches", "Back"),
 ]
+# The log, full screen, and back (see LogView for its own keys). On the
+# panes rather than the app: Tab otherwise moves the focus (h/l do that here).
+for keys in (SEARCH_KEYS, RESULT_KEYS):
+    keys.append(Binding("tab", "app.toggle_log", "Log"))
 INPUT_KEYS = [
     Binding("escape", "app.close_search_input", "Cancel"),
 ]
@@ -419,6 +425,11 @@ class EbooksApp(App):
     Horizontal {
         height: 1fr;
     }
+    LogView {
+        height: 1fr;
+        border: round $accent;
+        padding: 0 1;
+    }
     SearchList, ResultsTable {
         height: 100%;
     }
@@ -493,6 +504,8 @@ class EbooksApp(App):
         self._online: frozenset[str] | None = None
         self._preview = None  # Timer for a pending preview
         self._focus_before_search = None  # to go back to when the prompt closes
+        self._focus_before_log = None  # and when the log closes
+        self._log_handler: LogHandler | None = None
         self._deleting: PastSearch | None = None  # waiting for its y/n
         # The newest request for each line sent, whoever made it (us, or a
         # socket client)
@@ -506,10 +519,11 @@ class EbooksApp(App):
         self._ui_gone = False  # unmounted: nothing left to update
 
     def compose(self) -> ComposeResult:
-        with Horizontal():
+        with Horizontal(id="main"):
             yield SearchList(id="searches")
             yield ResultsTable(id="results", cursor_type="row", zebra_stripes=True)
             yield BookDetails()
+        yield LogView(id="log")
         with Horizontal(id="prompt"):
             yield Label("@search")
             yield SearchInput(placeholder="title or author, Enter to search, Esc to cancel")
@@ -525,6 +539,12 @@ class EbooksApp(App):
         self.query_one("#prompt").display = False
         self.query_one(ConfirmPrompt).display = False
         self.query_one(BookDetails).display = False
+        log_view = self.query_one(LogView)
+        log_view.display = False
+        log_view.border_title = "log"
+        # First, so the log has the agent's start too
+        self._log_handler = LogHandler(self._log_line, asyncio.get_running_loop())
+        self._log_handler.attach()
 
         self.searches = list_searches(self.searches_dir)
         self._rebuild_sidebar()  # and shows the newest
@@ -649,7 +669,9 @@ class EbooksApp(App):
 
     async def on_unmount(self):
         # However the app ends (q normally stops the agent first), leave IRC
-        # cleanly. The widgets are already gone by now.
+        # cleanly. The widgets are already gone by now, so the log goes first.
+        if self._log_handler:
+            self._log_handler.detach()
         self._ui_gone = True
         await self._stop_agent()
 
@@ -707,9 +729,14 @@ class EbooksApp(App):
             n = len(search.results.items)
             self._note = f"{search.query}: {n} result{'' if n == 1 else 's'}"
             self._rebuild_sidebar(highlight=_entry_id(search))
-            # Into the results, unless the search prompt is open again
+            # Into the results, unless the search prompt is open again. With
+            # the log open, that's where you'll be when you go back to them.
             if not self.query_one(SearchInput).has_focus:
-                self.query_one(ResultsTable).focus()
+                table = self.query_one(ResultsTable)
+                if self.query_one(LogView).display:
+                    self._focus_before_log = table
+                else:
+                    table.focus()
             return
         self._live_updated(self._live, r)
 
@@ -812,6 +839,27 @@ class EbooksApp(App):
         self.searches.remove(search)
         self._rebuild_sidebar()
         self.note(f'deleted search "{search.query}"')
+
+    # --- the log --------------------------------------------------------
+
+    def _log_line(self, entry):
+        if not self._ui_gone:
+            self.query_one(LogView).add(entry)
+
+    def action_toggle_log(self):
+        """The log, full screen, or back to where you were."""
+        main, log_view = self.query_one("#main"), self.query_one(LogView)
+        if log_view.display:
+            log_view.display = False
+            main.display = True
+            before = self._focus_before_log
+            (before if before and before.is_attached and before.display
+             else self.query_one(SearchList)).focus()
+            return
+        self._focus_before_log = self.focused
+        main.display = False
+        log_view.display = True
+        log_view.focus()
 
     # --- search prompt --------------------------------------------------
 

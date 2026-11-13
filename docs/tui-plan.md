@@ -134,7 +134,7 @@ Built in thin slices, each one usable on its own. Using each stage decides the n
 | 4 | Filter results: `/` narrows the table as you type, `Esc` clears | |
 | 5a | The hook's outcome reaches frontends: `Request.hook` (`running`, `done`, `failed`) and `hook_error`, sent as `RequestUpdated`. See *Stage 5: books* | done |
 | 5b | A BOOKS section in the sidebar: transfers that turn into downloads, the hook's outcome, details in the main pane, `d` to dismiss. A running hook counts as in progress for `q`. See *Stage 5: books* | done |
-| 5c | A log buffer for notices not linked to a request, only if 5b leaves one missing | |
+| 5c | A log view: `Tab` switches to it, full screen, and back. What `agent.log` gets, live, this session only. See *Stage 5: books* | done |
 | 6 | Polish from use: ~~offline bots greyed out~~ (done: a bot not in the channel has its rows dimmed with `○`, live, and the subtitle names them; Enter on one is refused; while not joined nobody counts as offline), sorting, `?` help, `gg`/`G`, the TUI as the default with `--headless` | |
 
 ### Stage 5: books
@@ -187,6 +187,15 @@ hook_error: str | None = None  # when FAILED, e.g. "exit 23: rsync: connection r
 - The status bar follows the hook: `X: downloaded, moving…`, then `X: moved` or `X: hook failed (…), kept in downloads/`.
 - `q` counts a running hook as in progress: "1 book still moving: press q again to quit". Quitting then waits for the hook to finish (up to `on_complete_timeout`) and says so, rather than killing it partway.
 - Deferred: `Enter` on a book (cancel, retry, `xdg-open`), and re-running a failed hook.
+
+**5c: the log view.** Everything that goes to `agent.log`, as it happens: connecting and TLS, every line we send, messages sent to us, DCC offers (rejected ones too), the hook's output, socket activity. Those are what you'd open a log for; the core's events alone would miss most of them.
+
+- `Tab` switches to it, full screen (the sidebar and main pane are hidden, the status bar stays), and `Tab` or `Esc` back, to where the focus was. Not in the main pane: highlighting something in the sidebar would keep replacing it.
+- A logging handler on the root logger, at INFO like the file, added when the app mounts and removed before it unmounts. Records from other threads (zip extraction) are handed to the event loop. It only works while the agent runs in the TUI's process; a daemon would need its log sent over the socket (see *Transports* in `core-interface.md`).
+- Lines read `20:14:03 WARN  message`: warnings yellow, errors red. The message has a column of its own, so continuation lines (hook output, tracebacks) and long lines that wrap line up under it, and every entry starts with its time.
+- It follows new lines while you're at the bottom; scrolling up stops that, `G` goes back down and follows again. `j`/`k`, `gg`/`G`.
+- This session only, the last 2,000 lines. Earlier sessions are in `agent.log`.
+- No warning count in the status bar: the markers and the status bar already say when something failed. The log is for the details.
 
 Deferred until something needs them: `:` commands, a mode system, several buffers or tabs, keymaps from config, the daemon split.
 
