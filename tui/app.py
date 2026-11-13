@@ -242,10 +242,6 @@ def marker(r: Request | None) -> str:
     return book_marker(r)
 
 
-# After an offline bot's name. Its whole row is dimmed too.
-OFFLINE_PIP = "○"
-
-
 def offline_summary(bots: list[str]) -> str:
     """For the results' subtitle: "2 bots offline (artemis_serv, Oatmeal)"."""
     n = len(bots)
@@ -613,7 +609,7 @@ class EbooksApp(App):
                 continue
             for key in keys:
                 item = self._rows[key]
-                for column, value in zip(("bot", "type", "size", "title"), self._item_cells(item)):
+                for column, value in zip(("type", "size", "title"), self._item_cells(item)):
                     table.update_cell(key, column, value)
         if isinstance(self.shown, PastSearch):
             table.border_subtitle = self._subtitle(self.shown)
@@ -908,17 +904,16 @@ class EbooksApp(App):
         def width(header, values):
             return max([len(header), *(len(v) for v in values)])
 
-        # Title last, so a long one is what gets cut off, not the size
+        # Title last, so a long one is what gets cut off, not the size. No
+        # bot column: which bot only matters if it's offline, and those rows
+        # are dimmed (and named in the subtitle).
         widths = {
             "state": 4,
-            # Room for the pip after an offline bot
-            "bot": width("bot", (f"{i.bot} {OFFLINE_PIP}" for i in items)),
             "type": width("type", (i.ext or "" for i in items)),
             "size": 4,
             "title": width("title", (i.title for i in items)),
         }
         table.add_column("", key="state", width=widths["state"])
-        table.add_column("bot", key="bot", width=widths["bot"])
         table.add_column("type", key="type", width=widths["type"])
         table.add_column(Text("size", justify="right"), key="size", width=widths["size"])
         table.add_column("title", key="title", width=widths["title"])
@@ -929,7 +924,7 @@ class EbooksApp(App):
             table.divider_row = table.row_count
             label = f"── other formats ({len(others)}) "
             title = label + "─" * max(0, widths["title"] - len(label))
-            cells = ["─" * widths[k] for k in ("state", "bot", "type", "size")] + [title]
+            cells = ["─" * widths[k] for k in ("state", "type", "size")] + [title]
             table.add_row(*(Text(c, style="dim") for c in cells), key=DIVIDER)
         for item in others:
             self._add_row(table, item)
@@ -992,13 +987,10 @@ class EbooksApp(App):
         table.add_row(state, *self._item_cells(item), key=key)
 
     def _item_cells(self, item: ResultItem) -> tuple[Text, ...]:
-        """A row's bot, type, size and title cells: dimmed if the bot is offline.
+        """A row's type, size and title cells: dimmed if the bot is offline.
         (The state column isn't: it's about our request, not the bot.)"""
-        offline = self._is_offline(item.bot)
-        style = "dim" if offline else ""
-        bot = f"{item.bot} {OFFLINE_PIP}" if offline else item.bot
+        style = "dim" if self._is_offline(item.bot) else ""
         return (
-            Text(bot, style=style),
             Text(item.ext or "", style=style),
             Text(human_size(item.size_bytes), style=style, justify="right"),
             Text(item.title, style=style),

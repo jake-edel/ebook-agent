@@ -135,7 +135,7 @@ Built in thin slices, each one usable on its own. Using each stage decides the n
 | 5a | The hook's outcome reaches frontends: `Request.hook` (`running`, `done`, `failed`) and `hook_error`, sent as `RequestUpdated`. See *Stage 5: books* | done |
 | 5b | A BOOKS section in the sidebar: transfers that turn into downloads, the hook's outcome, details in the main pane, `d` to dismiss. A running hook counts as in progress for `q`. See *Stage 5: books* | done |
 | 5c | A log view: `Tab` switches to it, full screen, and back. What `agent.log` gets, live, this session only. See *Stage 5: books* | done |
-| 6 | Polish from use: ~~offline bots greyed out~~ (done: a bot not in the channel has its rows dimmed with `○`, live, and the subtitle names them; Enter on one is refused; while not joined nobody counts as offline), sorting, `?` help, `gg`/`G`, the TUI as the default with `--headless` | |
+| 6 | Polish from use: ~~offline bots greyed out~~ (done: a bot not in the channel has its rows dimmed, live, and the subtitle names them; Enter on one is refused; while not joined nobody counts as offline), ~~no bot column~~ (done: which bot only matters when it's offline, and that's shown by dimming), sorting, `?` help, `gg`/`G`, the TUI as the default with `--headless` | |
 
 ### Stage 5: books
 

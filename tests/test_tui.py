@@ -31,7 +31,6 @@ from tui.app import (
     DIVIDER,
     BookDetails,
     ConfirmPrompt,
-    OFFLINE_PIP,
     PREVIEW_DELAY,
     EbooksApp,
     ResultsTable,
@@ -215,11 +214,18 @@ def rows(app):
             for r in table.ordered_rows if r.key.value != DIVIDER]
 
 
-def dimmed_bots(app):
-    """The bot cell of each dimmed row, without the divider."""
+def bots(app):
+    """Which bot each row is from (there's no column for it), without the divider."""
     table = app.query_one(ResultsTable)
-    cells = [table.get_row(r.key) for r in table.ordered_rows if r.key.value != DIVIDER]
-    return [str(row[1]) for row in cells if all(c.style == "dim" for c in row[1:])]
+    return [app._rows[r.key.value].bot for r in table.ordered_rows if r.key.value != DIVIDER]
+
+
+def dimmed_bots(app):
+    """The bot of each dimmed row, without the divider."""
+    table = app.query_one(ResultsTable)
+    keys = [r.key for r in table.ordered_rows if r.key.value != DIVIDER]
+    return [app._rows[k.value].bot for k in keys
+            if all(c.style == "dim" for c in table.get_row(k)[1:])]
 
 
 def has_divider(app):
@@ -237,9 +243,9 @@ def test_opens_on_the_newest_search(two_searches):
 
     focused, shown, bar = run_app(two_searches, steps)
     assert isinstance(focused, SearchList)
-    assert [(r[1], r[2], str(r[3]), r[4]) for r in shown] == [
-        ("Bsk", "epub", "1.0M", "Frank Herbert - Dune (Retail)"),
-        ("Oatmeal", "mobi", "681K", "Frank Herbert - Dune Messiah"),
+    assert [(r[1], str(r[2]), r[3]) for r in shown] == [
+        ("epub", "1.0M", "Frank Herbert - Dune (Retail)"),
+        ("mobi", "681K", "Frank Herbert - Dune Messiah"),
     ]
     assert str(bar) == "#ebooks as me"
 
@@ -324,7 +330,7 @@ def test_epubs_first_then_a_divider_then_the_rest(two_searches):
         await settle(pilot)
         table = app.query_one(ResultsTable)
         divider = table.get_row_at(table.divider_row)
-        return [(r[1], r[2]) for r in rows(app)], table.divider_row, str(divider[4])
+        return list(zip(bots(app), (r[1] for r in rows(app)))), table.divider_row, str(divider[3])
 
     shown, divider_row, label = run_app(two_searches, steps)
     # The fixture lists two artemis_serv mobis first; each group keeps the bot's order
@@ -679,7 +685,7 @@ def test_its_results_open_when_they_arrive(two_searches):
     assert entries[0] == ("ac/dc", "Nov 11 12:00 · 1 result")
     assert len(entries) == 3  # the placeholder became the search on disk
     assert high == shown == "ac/dc"
-    assert [r[4] for r in shown_rows] == ["AC_DC - Highway to Hell"]
+    assert [r[3] for r in shown_rows] == ["AC_DC - Highway to Hell"]
     assert isinstance(focused, ResultsTable)
     assert bar.endswith("ac/dc: 1 result")
 
@@ -804,17 +810,16 @@ def test_first_search_with_none_on_disk(searches):
 
 # --- offline bots -------------------------------------------------------------
 
-def test_offline_bots_are_dimmed_with_a_pip(two_searches):
+def test_offline_bots_are_dimmed(two_searches):
     agent = FakeAgent()
     agent.online = {"bsk"}  # not Oatmeal
 
     async def steps(app, pilot):
         table = app.query_one(ResultsTable)
-        return [r[1] for r in rows(app)], dimmed_bots(app), table.border_subtitle
+        return dimmed_bots(app), table.border_subtitle
 
-    bots, dimmed, subtitle = run_app(two_searches, steps, agent=agent)
-    assert bots == ["Bsk", f"Oatmeal {OFFLINE_PIP}"]
-    assert dimmed == [f"Oatmeal {OFFLINE_PIP}"]
+    dimmed, subtitle = run_app(two_searches, steps, agent=agent)
+    assert dimmed == ["Oatmeal"]
     assert subtitle == "2 results · 14 lists · 1 bot offline (Oatmeal)"
 
 
@@ -831,7 +836,7 @@ def test_rows_follow_bots_coming_and_going(two_searches):
         return gone, (dimmed_bots(app), table.border_subtitle)
 
     gone, back = run_app(two_searches, steps, agent=agent)
-    assert gone == ([f"Bsk {OFFLINE_PIP}"], "2 results · 14 lists · 1 bot offline (Bsk)")
+    assert gone == (["Bsk"], "2 results · 14 lists · 1 bot offline (Bsk)")
     assert back == ([], "2 results · 14 lists")
 
 
@@ -850,7 +855,7 @@ def test_nobody_is_offline_while_not_joined(two_searches):
         return before, during, dimmed_bots(app)
 
     before, during, after = run_app(two_searches, steps, agent=agent)
-    assert before == after == [f"Oatmeal {OFFLINE_PIP}"]
+    assert before == after == ["Oatmeal"]
     assert during == ([], "2 results · 14 lists")
 
 
@@ -864,7 +869,7 @@ def test_switching_searches_keeps_bots_offline(two_searches):
         return dimmed_bots(app), app.query_one(ResultsTable).border_subtitle
 
     dimmed, subtitle = run_app(two_searches, steps, agent=agent)
-    assert dimmed == [f"artemis_serv {OFFLINE_PIP}"] * 2
+    assert dimmed == ["artemis_serv"] * 2
     assert subtitle == "10 results · 14 lists · 1 bot offline (artemis_serv)"
 
 
