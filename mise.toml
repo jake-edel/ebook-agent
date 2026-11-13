@@ -1,0 +1,14 @@
+# The Python this project runs on. mise installs its own copy, so a system
+# Python upgrade can't break .venv. Upgrade deliberately: irc3 1.1.12 breaks
+# on Python 3.16 (see TODO.md)
+[tools]
+python = "3.14.8"
+
+[env]
+# Create .venv from that Python if it's missing, and activate it on cd
+_.python.venv = { path = ".venv", create = true }
+
+# The packages' versions live in requirements*.txt; this installs them into .venv
+[tasks.deps]
+description = "Install the pinned dependencies into .venv"
+run = "uv pip install -r requirements.txt -r requirements-dev.txt"

@@ -4,28 +4,20 @@ A Python agent for IRCHighway's `#ebooks` channel. It sends `@search` queries an
 
 ## Requirements
 
-- Python 3.11+
-- `irc3`, and `textual` for the TUI
+- [mise](https://mise.jdx.dev), which installs the pinned Python (3.14.8, in `mise.toml`) and creates and activates the venv
+- `irc3`, and `textual` for the TUI (pinned in `requirements.txt`; `pytest` in `requirements-dev.txt`)
 
 ## Setup
 
-First time only — create a virtual environment in `.venv/` and install dependencies into it:
+First time only, from the project directory: install the pinned Python, then the dependencies into `.venv/` (mise creates it):
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+mise trust
+mise install
+mise run deps
 ```
 
-Every new terminal session — activate the venv before running the agent:
-
-```bash
-source .venv/bin/activate
-```
-
-Your prompt should now start with `(.venv)`. To confirm, `which python` should point inside the project's `.venv/`. Run `deactivate` to leave the venv.
-
-Using fish or csh? Use `source .venv/bin/activate.fish` or `source .venv/bin/activate.csh` instead.
+After that, mise activates `.venv` whenever you `cd` into the project, provided mise is activated in your shell. To confirm, `which python` should point inside the project's `.venv/`.
 
 Skip activation entirely by calling the venv's Python directly:
 
@@ -33,7 +25,9 @@ Skip activation entirely by calling the venv's Python directly:
 .venv/bin/python ebooks_agent.py
 ```
 
-After pulling changes that touch `requirements.txt`, re-run `pip install -r requirements.txt` with the venv active.
+After pulling changes that touch `requirements*.txt`, run `mise run deps` again.
+
+Upgrading Python: change the version in `mise.toml`, delete `.venv/`, then `mise install` and `mise run deps`. Check `TODO.md` first: irc3 1.1.12 breaks on Python 3.16.
 
 ## Configuration
 
@@ -160,11 +154,7 @@ One example client is a Neovim `:Ebook` command (`~/.dotfiles/nvim/lua/config/eb
 
 ## Testing
 
-Install the dev dependencies once (with the venv active):
-
-```bash
-pip install -r requirements-dev.txt
-```
+`mise run deps` (see *Setup*) installs the dev dependencies too.
 
 Then run the suite from the project root:
 
