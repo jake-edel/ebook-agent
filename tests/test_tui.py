@@ -16,6 +16,7 @@ from core import (
     AgentStatus,
     BotMessage,
     ConnectionState,
+    HookState,
     MembersChanged,
     Request,
     RequestKind,
@@ -25,6 +26,7 @@ from core import (
 )
 from tui.app import (
     DIVIDER,
+    BookDetails,
     ConfirmPrompt,
     OFFLINE_PIP,
     PREVIEW_DELAY,
@@ -32,6 +34,7 @@ from tui.app import (
     ResultsTable,
     SearchInput,
     SearchList,
+    book_title,
     human_size,
     marker,
 )
@@ -164,7 +167,8 @@ class FakeAgent:
         line, bot = plugin.check_request(line)  # the real checks
         self.made.append(line)
         return self.add(Request(id=str(next(self._ids)), kind=RequestKind.BOOK, line=line,
-                                bot=bot, state=S.PENDING, created_at=0, updated_at=0))
+                                bot=bot, state=S.PENDING, created_at=time.time(),
+                                updated_at=time.time()))
 
     def search(self, query):
         query = plugin.check_query(query)  # the real checks
@@ -956,3 +960,315 @@ def test_a_file_already_gone_is_still_removed(two_searches):
         return [e[0] for e in sidebar(app)]
 
     assert run_app(two_searches, steps) == ["warhammer"]
+
+
+# --- books ----------------------------------------------------------------------
+
+DUNE_LINE = "!Bsk Frank Herbert - Dune (Retail).epub"
+MESSIAH_LINE = "!Oatmeal Frank Herbert - Dune Messiah.mobi"
+H = HookState
+
+
+def book(agent, line=DUNE_LINE, created_at=None, **changes):
+    """A book request made elsewhere (e.g. by a socket client), then `changes`."""
+    req = agent.request(line)
+    if created_at is not None:
+        req = agent.update(req.id, created_at=created_at)
+    return agent.update(req.id, **changes) if changes else req
+
+
+def headings_and_entries(app):
+    """The sidebar's lines, headings included, the way they read: "BOOKS",
+    "✓ Frank Herbert - Dune (Retail) | 20:14 · 1.0M · moved"."""
+    return [" | ".join(line.strip() for line in str(o.prompt).split("\n"))
+            for o in app.query_one(SearchList).options]
+
+
+def details(app):
+    """The book pane's text, laid out 100 columns wide."""
+    from rich.console import Console
+    console = Console(width=100, record=True, file=open(os.devnull, "w"))
+    console.print(app.query_one(BookDetails).content)
+    return console.export_text()
+
+
+def test_book_titles_drop_the_bot_and_ids():
+    r = Request(id="1", kind=RequestKind.BOOK, bot="artemis_serv", state=S.PENDING, created_at=0,
+                updated_at=0, line="!artemis_serv f73222c7950c | The Purging of Kadillus.mobi")
+    assert book_title(r) == "The Purging of Kadillus"
+
+
+def test_no_books_no_sections(two_searches):
+    async def steps(app, pilot):
+        return headings_and_entries(app), app.query_one(SearchList).border_title
+
+    lines, title = run_app(two_searches, steps)
+    assert "BOOKS" not in lines and "SEARCHES" not in lines
+    assert title == "searches"
+
+
+def test_a_requested_book_appears_above_the_searches(two_searches):
+    agent = FakeAgent()
+
+    async def steps(app, pilot):
+        await pilot.press("enter", "enter")  # into dune's results, request the epub
+        await pilot.pause()
+        return headings_and_entries(app), highlighted(app), app.focused, \
+            app.query_one(SearchList).border_title
+
+    lines, high, focused, title = run_app(two_searches, steps, agent=agent)
+    assert lines[:3] == ["BOOKS", "… Frank Herbert - Dune (Retail) | queued for Bsk", "SEARCHES"]
+    assert [l.split(" | ")[0] for l in lines[3:]] == ["dune frank herbert", "warhammer"]
+    # Nothing moved under you: still on the search, still in its results
+    assert high == "dune frank herbert" and isinstance(focused, ResultsTable)
+    assert title is None  # the headings say it now
+
+
+def test_newest_book_first_and_finishing_doesnt_move_it(two_searches):
+    agent = FakeAgent()
+
+    async def steps(app, pilot):
+        old = book(agent, created_at=1000.0)
+        book(agent, MESSIAH_LINE, created_at=2000.0)
+        await pilot.pause()
+        before = headings_and_entries(app)[1:3]
+        agent.update(old.id, state=S.DONE, path=Path("/books/Dune.epub"))
+        await pilot.pause()
+        return before, headings_and_entries(app)[1:3]
+
+    before, after = run_app(two_searches, steps, agent=agent)
+    assert [l.split(" | ")[0] for l in before] == [
+        "… Frank Herbert - Dune Messiah", "… Frank Herbert - Dune (Retail)"]
+    assert [l.split(" | ")[0] for l in after] == [
+        "… Frank Herbert - Dune Messiah", "✓ Frank Herbert - Dune (Retail)"]
+
+
+def test_a_book_is_followed_through_its_hook(two_searches):
+    agent = FakeAgent()
+    created = datetime(2026, 11, 12, 20, 14).timestamp()
+
+    async def steps(app, pilot):
+        req = book(agent, created_at=created)
+        seen = []
+        for changes in (
+            dict(state=S.WAITING),
+            dict(state=S.TRANSFERRING, filename="Dune.epub", size=1_000_000, received=420_000),
+            dict(state=S.DONE, path=Path("/home/me/downloads/Dune.epub"), received=1_000_000,
+                 hook=H.RUNNING),
+            dict(hook=H.DONE),
+        ):
+            agent.update(req.id, **changes)
+            await pilot.pause()
+            seen.append((headings_and_entries(app)[1], status(app).split(" · ", 1)[1]))
+        return seen
+
+    assert run_app(two_searches, steps, agent=agent) == [
+        ("… Frank Herbert - Dune (Retail) | waiting for Bsk",
+         "Frank Herbert - Dune (Retail).epub: sent, waiting for Bsk"),
+        ("⇣ Frank Herbert - Dune (Retail) | Bsk · 42% of 977K",
+         "Frank Herbert - Dune (Retail).epub: 42% of 977K"),
+        ("⇢ Frank Herbert - Dune (Retail) | moving…",
+         "Frank Herbert - Dune (Retail).epub: downloaded, moving…"),
+        ("✓ Frank Herbert - Dune (Retail) | 20:14 · 977K · moved",
+         "Frank Herbert - Dune (Retail).epub: moved"),
+    ]
+
+
+@pytest.mark.parametrize("changes, entry, bar, cell", [
+    (dict(hook=H.FAILED, hook_error="exit 23: connection refused"),
+     "⚠ Frank Herbert - Dune (Retail) | hook failed · in downloads/",
+     "Frank Herbert - Dune (Retail).epub: hook failed (exit 23: connection refused), "
+     "still at /home/me/downloads/Dune.epub", "⚠"),
+    (dict(),  # no hook configured
+     "✓ Frank Herbert - Dune (Retail) | 20:14 · 977K · saved",
+     "saved /home/me/downloads/Dune.epub", "✓"),
+])
+def test_how_a_download_ended(two_searches, changes, entry, bar, cell):
+    agent = FakeAgent()
+    created = datetime(2026, 11, 12, 20, 14).timestamp()
+
+    async def steps(app, pilot):
+        book(agent, created_at=created, state=S.DONE, size=1_000_000, received=1_000_000,
+             path=Path("/home/me/downloads/Dune.epub"), **changes)
+        await pilot.pause()
+        return headings_and_entries(app)[1], status(app).split(" · ", 1)[1], state_cells(app)[0]
+
+    assert run_app(two_searches, steps, agent=agent) == (entry, bar, cell)
+
+
+def test_results_rows_follow_the_hook_too(two_searches):
+    agent = FakeAgent()
+
+    async def steps(app, pilot):
+        req = book(agent, state=S.DONE, path=Path("/d/Dune.epub"), hook=H.RUNNING)
+        await pilot.pause()
+        moving = state_cells(app)[0]
+        agent.update(req.id, hook=H.DONE)
+        await pilot.pause()
+        await pilot.press("enter", "enter")  # try to request it again
+        return moving, state_cells(app)[0], status(app)
+
+    moving, moved, bar = run_app(two_searches, steps, agent=agent)
+    assert (moving, moved) == ("⇢", "✓")
+    assert bar.endswith("already downloaded, and moved: Frank Herbert - Dune (Retail)")
+
+
+def test_moving_through_the_sidebar_skips_the_headings(two_searches):
+    agent = FakeAgent()
+
+    async def steps(app, pilot):
+        book(agent)
+        await pilot.pause()
+        seen = [highlighted(app)]  # the newest search, as before
+        for key in ("k", "k", "j", "j"):
+            await pilot.press(key)
+            seen.append(highlighted(app))
+        return seen
+
+    assert run_app(two_searches, steps, agent=agent) == [
+        "dune frank herbert",
+        "… Frank Herbert - Dune (Retail)",   # over SEARCHES
+        "… Frank Herbert - Dune (Retail)",   # BOOKS can't be reached
+        "dune frank herbert",
+        "warhammer",
+    ]
+
+
+def test_highlighting_a_book_shows_its_details(two_searches):
+    agent = FakeAgent()
+    created = datetime(2026, 11, 12, 20, 14, 3).timestamp()
+
+    async def steps(app, pilot):
+        req = book(agent, created_at=created, state=S.WAITING)
+        agent.emit(BotMessage("Bsk", "You are in queue position 2", req.id))
+        agent.emit(BotMessage("Mallory", "hi", None))  # not about it
+        await pilot.press("k")
+        await settle(pilot)
+        table, pane = app.query_one(ResultsTable), app.query_one(BookDetails)
+        first = (table.display, pane.display, pane.border_title, pane.border_subtitle, details(app))
+        agent.update(req.id, state=S.DONE, size=1_000_000, path=Path("/d/Dune.epub"),
+                     hook=H.FAILED, hook_error="exit 23: connection refused")
+        await pilot.pause()
+        after = details(app)
+        await pilot.press("j")  # back to a search: its results again
+        await settle(pilot)
+        return first, after, (table.display, pane.display, len(rows(app)))
+
+    (table_shown, pane_shown, title, subtitle, text), after, back = run_app(
+        two_searches, steps, agent=agent)
+    assert (table_shown, pane_shown) == (False, True)
+    assert title == "book: Frank Herbert - Dune (Retail)" and subtitle == "waiting for Bsk"
+    assert "request    !Bsk Frank Herbert - Dune (Retail).epub" in text
+    assert "state      sent, waiting for Bsk" in text
+    assert "requested  Nov 12 20:14:03" in text
+    assert "Bsk: You are in queue position 2" in text and "Mallory" not in text
+    # It follows the book while shown
+    assert "hook       failed: exit 23: connection refused" in after
+    assert "still at   /d/Dune.epub" in after and "size       977K" in after
+    assert back == (True, False, 2)
+
+
+def test_enter_on_a_book_only_says_how_its_doing(two_searches):
+    agent = FakeAgent()
+
+    async def steps(app, pilot):
+        book(agent, state=S.WAITING)
+        await pilot.press("k", "enter")
+        await pilot.pause()
+        return app.focused, status(app), agent.made
+
+    focused, bar, made = run_app(two_searches, steps, agent=agent)
+    assert isinstance(focused, SearchList)
+    assert bar.endswith("Frank Herbert - Dune (Retail).epub: sent, waiting for Bsk")
+    assert made == [DUNE_LINE]  # not requested again
+
+
+@pytest.mark.parametrize("changes, note", [
+    (dict(state=S.TRANSFERRING, size=10, received=5), "is still in progress"),
+    (dict(state=S.DONE, path=Path("/d/Dune.epub"), hook=H.RUNNING), "is still moving"),
+])
+def test_books_in_progress_cant_be_dismissed(two_searches, changes, note):
+    agent = FakeAgent()
+
+    async def steps(app, pilot):
+        book(agent, **changes)
+        await pilot.press("k", "d")
+        await pilot.pause()
+        return len(app._books), app.query_one(ConfirmPrompt).display, status(app)
+
+    count, asked, bar = run_app(two_searches, steps, agent=agent)
+    assert count == 1 and not asked
+    assert bar.endswith(f"Frank Herbert - Dune (Retail) {note}")
+
+
+def test_d_dismisses_a_finished_book_without_asking(two_searches):
+    agent = FakeAgent()
+
+    async def steps(app, pilot):
+        book(agent, MESSIAH_LINE, created_at=1000.0, state=S.FAILED, error="No DCC offer")
+        book(agent, created_at=2000.0, state=S.DONE, path=Path("/d/Dune.epub"), hook=H.DONE)
+        await pilot.press("k", "k", "d")  # the newer one, at the top
+        await pilot.pause()
+        after_one = (headings_and_entries(app)[:3], highlighted(app),
+                     app.query_one(ConfirmPrompt).display)
+        await pilot.press("d")
+        await pilot.pause()
+        return after_one, headings_and_entries(app), highlighted(app), app.shown.query
+
+    (lines, high, asked), after, high_after, shown = run_app(two_searches, steps, agent=agent)
+    assert lines == ["BOOKS", "✗ Frank Herbert - Dune Messiah | No DCC offer", "SEARCHES"]
+    assert high == "✗ Frank Herbert - Dune Messiah" and not asked
+    # The last one: the section goes, and the highlight moves on to the searches
+    assert [l.split(" | ")[0] for l in after] == ["dune frank herbert", "warhammer"]
+    assert high_after == shown == "dune frank herbert"
+    assert Path("/d/Dune.epub").exists() is False  # nothing on disk was ever involved
+
+
+def test_quitting_while_a_book_is_moving_asks_first(two_searches):
+    agent = FakeAgent()
+
+    async def steps(app, pilot):
+        book(agent, state=S.DONE, path=Path("/d/Dune.epub"), hook=H.RUNNING)
+        await pilot.pause()
+        await pilot.press("q")
+        await pilot.pause()
+        return app.is_running, status(app)
+
+    running, bar = run_app(two_searches, steps, agent=agent)
+    assert running and bar.endswith("1 book still moving: press q again to quit")
+
+
+def test_quitting_says_what_it_waits_for(two_searches):
+    agent = FakeAgent()
+    seen = []
+    stop = agent.stop
+
+    async def slow_stop():
+        seen.append(status(app_ref[0]))  # what the bar says while stop() runs
+        await stop()
+    agent.stop = slow_stop
+    app_ref = []
+
+    async def steps(app, pilot):
+        app_ref.append(app)
+        book(agent, state=S.DONE, path=Path("/d/Dune.epub"), hook=H.RUNNING)
+        await pilot.pause()
+        await pilot.press("q", "q")
+        await pilot.pause()
+
+    run_app(two_searches, steps, agent=agent)
+    assert seen == ["waiting for 1 book to finish moving, then disconnecting…"]
+
+
+def test_both_kinds_of_work_in_the_quit_question(two_searches):
+    agent = FakeAgent()
+
+    async def steps(app, pilot):
+        book(agent, state=S.DONE, path=Path("/d/Dune.epub"), hook=H.RUNNING)
+        book(agent, MESSIAH_LINE, state=S.WAITING)
+        await pilot.pause()
+        await pilot.press("q")
+        return status(app)
+
+    assert run_app(two_searches, steps, agent=agent).endswith(
+        "1 request in progress, 1 book still moving: press q again to quit and cancel")

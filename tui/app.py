@@ -1,4 +1,4 @@
-"""The TUI app: search, browse past searches on disk, and request books from them.
+"""The TUI app: search, browse past searches on disk, request books, and follow them.
 
 The app runs the agent (and the Unix socket, so socket clients keep
 working while it's open) on Textual's event loop, and talks to it only
@@ -6,9 +6,12 @@ through the core interface (core.AgentService).
 """
 
 import asyncio
+import time
 from datetime import datetime
 from pathlib import Path
 
+from rich.console import Group
+from rich.table import Table
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -23,6 +26,7 @@ from core import (
     BotMessage,
     ConnectionState,
     Event,
+    HookState,
     MembersChanged,
     Request,
     RequestKind,
@@ -30,7 +34,7 @@ from core import (
     RequestUpdated,
     StatusChanged,
 )
-from results import ResultItem
+from results import ResultItem, parse_line
 from server.unix_socket import SocketUnavailableError, unix_socket
 
 from .library import PastSearch, list_searches, load_search
@@ -46,8 +50,9 @@ _MOVE = [
 ]
 SEARCH_KEYS = _MOVE + [
     Binding("l,right", "select", "Open", show=False),  # as Enter
-    # Deletes a past search (after a y/n), or dismisses a failed one
-    Binding("d", "app.delete_search", "Delete", show=False),
+    # Deletes a past search (after a y/n), or dismisses a failed search or
+    # a finished book
+    Binding("d", "app.delete_entry", "Delete", show=False),
 ]
 RESULT_KEYS = _MOVE + [
     Binding("h,left,escape", "app.focus_searches", "Back"),
@@ -70,6 +75,21 @@ PREVIEW_DELAY = 0.15
 
 class SearchList(OptionList):
     BINDINGS = SEARCH_KEYS
+
+    # Moving skips the section headings. Where there's nothing but a heading
+    # beyond the highlight, stay put: OptionList would wrap round to the far end.
+    def action_cursor_up(self):
+        if self._can_move(range(self.highlighted - 1, -1, -1)):
+            super().action_cursor_up()
+
+    def action_cursor_down(self):
+        if self._can_move(range(self.highlighted + 1, self.option_count)):
+            super().action_cursor_down()
+
+    def _can_move(self, indexes) -> bool:
+        if self.highlighted is None:
+            return True
+        return any(not self.get_option_at_index(i).disabled for i in indexes)
 
 
 class SearchInput(Input):
@@ -108,6 +128,10 @@ class ConfirmPrompt(Static, can_focus=True):
             return
         self.asking = False
         self.post_message(self.Answered(yes))
+
+
+class BookDetails(Static):
+    """The main pane while a book is highlighted in the sidebar: how its request went."""
 
 
 # The row between the epubs and the other formats
@@ -173,6 +197,13 @@ def describe_request(r: Request) -> str:
         case RequestState.TRANSFERRING:
             return f"{label}: {_progress(r)}% of {human_size(r.size)}"
         case RequestState.DONE:
+            match r.hook:
+                case HookState.RUNNING:
+                    return f"{label}: downloaded, moving…"
+                case HookState.DONE:
+                    return f"{label}: moved"
+                case HookState.FAILED:
+                    return f"{label}: hook failed ({r.hook_error}), still at {r.path}"
             return f"saved {r.path}"
         case RequestState.FAILED:
             return f"{label}: {r.error}"
@@ -180,21 +211,29 @@ def describe_request(r: Request) -> str:
             return f"{label}: cancelled"
 
 
-def marker(r: Request | None) -> str:
-    """The results table's state column, for the latest request of a row."""
-    if r is None:
-        return ""
+def book_marker(r: Request) -> str:
+    """How a book is doing, in one character: the sidebar's, before its title."""
     match r.state:
         case RequestState.PENDING | RequestState.WAITING:
             return "…"
         case RequestState.TRANSFERRING:
-            return f"{_progress(r)}%"
+            return "⇣"
         case RequestState.DONE:
-            return "✓"
+            return {HookState.RUNNING: "⇢", HookState.FAILED: "⚠"}.get(r.hook, "✓")
         case RequestState.FAILED:
             return "✗"
         case RequestState.CANCELLED:
             return "–"
+
+
+def marker(r: Request | None) -> str:
+    """The results table's state column, for the latest request of a row: as
+    the sidebar's, but with the percentage while it's arriving."""
+    if r is None:
+        return ""
+    if r.state is RequestState.TRANSFERRING:
+        return f"{_progress(r)}%"
+    return book_marker(r)
 
 
 # After an offline bot's name. Its whole row is dimmed too.
@@ -214,17 +253,28 @@ _RETRYABLE = (RequestState.FAILED, RequestState.CANCELLED)
 
 # --- the sidebar --------------------------------------------------------------
 #
-# Each entry is a search on disk, or a search made this session that hasn't
-# produced a results file: still running, or failed (kept until dismissed).
-# A search that finishes becomes a file on disk like any other.
+# Two sections. BOOKS (shown once there is one): this session's book
+# requests, whoever made them, newest first; a transfer that finishes stays
+# where it is as a download. Kept in memory only, until dismissed.
+# SEARCHES: each is a search on disk, or a search made this session that
+# hasn't produced a results file: still running, or failed (kept until
+# dismissed). A search that finishes becomes a file on disk like any other.
 
 Entry = PastSearch | Request
+
+# The section headings' option ids. They can't be highlighted.
+BOOKS_HEADING = "heading:books"
+SEARCHES_HEADING = "heading:searches"
+
+
+def _is_book(entry: Entry | None) -> bool:
+    return isinstance(entry, Request) and entry.kind is RequestKind.BOOK
 
 
 def _entry_id(entry: Entry) -> str:
     if isinstance(entry, PastSearch):
         return f"file:{entry.path}"
-    return f"search:{entry.id}"
+    return f"{entry.kind.value}:{entry.id}"
 
 
 def _entry_time(entry: Entry) -> datetime:
@@ -254,7 +304,51 @@ def search_progress(r: Request) -> str:
             return "– cancelled"
 
 
+def book_title(r: Request) -> str:
+    """The book's title as the results table shows it: no "!Bot", ids or extension."""
+    item = parse_line(r.line)
+    return item.title if item else r.line.split(" ", 1)[-1]
+
+
+def book_progress(r: Request) -> str:
+    """How a book is doing, in a few words: the second line of its sidebar entry."""
+    match r.state:
+        case RequestState.PENDING:
+            return f"queued for {r.bot}"
+        case RequestState.WAITING:
+            return f"waiting for {r.bot}"
+        case RequestState.TRANSFERRING:
+            return f"{r.bot} · {_progress(r)}% of {human_size(r.size)}"
+        case RequestState.DONE:
+            if r.hook is HookState.RUNNING:
+                return "moving…"
+            if r.hook is HookState.FAILED:
+                return f"hook failed · in {r.path.parent.name}/" if r.path else "hook failed"
+            when = datetime.fromtimestamp(r.created_at)
+            done = "moved" if r.hook is HookState.DONE else "saved"
+            return " · ".join(x for x in (f"{when:%H:%M}", human_size(r.size), done) if x)
+        case RequestState.FAILED:
+            return r.error or "failed"
+        case RequestState.CANCELLED:
+            return "cancelled"
+
+
+def _book_label(r: Request) -> Text:
+    # Only the marker is red: red text is unreadable on the highlight
+    bad = r.state is RequestState.FAILED or r.hook is HookState.FAILED
+    return Text.assemble(
+        (book_marker(r), "bold red" if bad else ""), " ", (book_title(r), "bold"), "\n",
+        (book_progress(r), "dim"),
+    )
+
+
+def _heading(name: str) -> Text:
+    return Text(name.upper(), style="bold dim")
+
+
 def _entry_label(entry: Entry) -> Text:
+    if _is_book(entry):
+        return _book_label(entry)
     if isinstance(entry, Request):
         style = "red" if entry.state is RequestState.FAILED else "dim"
         return Text.assemble((search_query(entry), "bold"), "\n", (search_progress(entry), style))
@@ -263,6 +357,58 @@ def _entry_label(entry: Entry) -> Text:
         (entry.query, "bold"), "\n",
         (f"{entry.when:%b %d %H:%M} · {count} result{'' if count == 1 else 's'}", "dim"),
     )
+
+
+# What the bots said, kept per book
+MAX_REPLIES = 50
+
+
+def book_details(r: Request, replies) -> Group:
+    """The book pane: the request, how it went, and what the bot said."""
+    created = datetime.fromtimestamp(r.created_at)
+    match r.state:
+        case RequestState.PENDING:
+            state = "queued: not sent yet"
+        case RequestState.WAITING:
+            state = f"sent, waiting for {r.bot}"
+        case RequestState.TRANSFERRING:
+            state = f"arriving: {_progress(r)}% of {human_size(r.size)}"
+        case RequestState.DONE:
+            state = "downloaded"
+        case RequestState.FAILED:
+            state = f"failed: {r.error}"
+        case RequestState.CANCELLED:
+            state = "cancelled"
+    rows = [("request", r.line), ("state", state)]
+    if r.size is not None:
+        rows.append(("size", human_size(r.size)))
+    rows.append(("requested", f"{created:%b %d %H:%M:%S}"))
+    if r.state is RequestState.DONE:
+        match r.hook:
+            case None:
+                rows.append(("saved", str(r.path)))
+            case HookState.RUNNING:
+                rows += [("hook", "running: moving it…"), ("saved", str(r.path))]
+            case HookState.DONE:
+                rows.append(("hook", f"done: moved from {r.path}"))
+            case HookState.FAILED:
+                rows += [("hook", f"failed: {r.hook_error}"), ("still at", str(r.path))]
+    # Two columns, so a long value wraps within its own
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style="dim", no_wrap=True)
+    grid.add_column()
+    for label, value in rows:
+        failed = label in ("state", "hook") and value.startswith("failed")
+        grid.add_row(label, Text(value, style="red" if failed else ""))
+    parts = [grid]
+    if replies:
+        said = Table.grid(padding=(0, 2))
+        said.add_column(style="dim", no_wrap=True)
+        said.add_column()
+        for when, nick, message in replies:
+            said.add_row(f"{datetime.fromtimestamp(when):%H:%M:%S}", f"{nick}: {message}")
+        parts += [Text("\nfrom the bot", style="bold dim"), said]
+    return Group(*parts)
 
 
 class EbooksApp(App):
@@ -279,10 +425,19 @@ class EbooksApp(App):
     SearchList {
         width: 34;
         border: round $panel;
+        /* One line per line of an entry: a long title is cut off, not wrapped */
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
     }
     ResultsTable {
         width: 1fr;
         border: round $panel;
+    }
+    BookDetails {
+        width: 1fr;
+        height: 100%;
+        border: round $panel;
+        padding: 0 1;
     }
     SearchList:focus, ResultsTable:focus {
         border: round $accent;
@@ -322,6 +477,10 @@ class EbooksApp(App):
         # aren't (yet), by request id
         self.searches: list[PastSearch] = []
         self._live: dict[str, Request] = {}
+        # BOOKS: this session's book requests, by id, until dismissed; and
+        # what the bots said about each, as (time, nick, text)
+        self._books: dict[str, Request] = {}
+        self._replies: dict[str, list[tuple[float, str, str]]] = {}
         self._entries: dict[str, Entry] = {}  # by option id
         # The entry shown in the results pane, its rows by row key, and the
         # row key of each request line in it
@@ -350,6 +509,7 @@ class EbooksApp(App):
         with Horizontal():
             yield SearchList(id="searches")
             yield ResultsTable(id="results", cursor_type="row", zebra_stripes=True)
+            yield BookDetails()
         with Horizontal(id="prompt"):
             yield Label("@search")
             yield SearchInput(placeholder="title or author, Enter to search, Esc to cancel")
@@ -364,6 +524,7 @@ class EbooksApp(App):
 
         self.query_one("#prompt").display = False
         self.query_one(ConfirmPrompt).display = False
+        self.query_one(BookDetails).display = False
 
         self.searches = list_searches(self.searches_dir)
         self._rebuild_sidebar()  # and shows the newest
@@ -406,9 +567,17 @@ class EbooksApp(App):
             self._note = describe_request(r)
             if r.kind is RequestKind.SEARCH:
                 self._search_updated(r)
+            else:
+                self._book_updated(r)
         elif isinstance(event, BotMessage) and event.request_id is not None:
             # Replies to requests; other messages to us wait for a log view
             self._note = f"{event.nick}: {event.text}"
+            if event.request_id in self._books:
+                replies = self._replies.setdefault(event.request_id, [])
+                replies.append((time.time(), event.nick, event.text))
+                del replies[:-MAX_REPLIES]
+                if _is_book(self.shown) and self.shown.id == event.request_id:
+                    self._show_book(self.shown)
         self._refresh_status()
 
     def _members_changed(self, state: ConnectionState):
@@ -442,12 +611,22 @@ class EbooksApp(App):
         text = f"{self._connection} · {self._note}" if self._note else self._connection
         self.query_one("#status", Static).update(text)
 
+    def _moving(self) -> list[Request]:
+        """Books whose hook is still running: quitting waits for them."""
+        return [r for r in self.agent.requests() if r.state.finished and not r.settled]
+
     async def action_quit(self):
         active = [r for r in self.agent.requests() if not r.state.finished]
-        if active and not self._quit_armed:
+        moving = self._moving()
+        if (active or moving) and not self._quit_armed:
             self._quit_armed = True
-            n = len(active)
-            self.note(f"{n} request{'s' if n > 1 else ''} in progress: press q again to quit and cancel")
+            busy = []
+            if n := len(active):
+                busy.append(f"{n} request{'s' if n > 1 else ''} in progress")
+            if n := len(moving):
+                busy.append(f"{n} book{'s' if n > 1 else ''} still moving")
+            then = "press q again to quit" + (" and cancel" if active else "")
+            self.note(f"{', '.join(busy)}: {then}")
             return
         await self._stop_agent()
         self.exit()
@@ -456,7 +635,12 @@ class EbooksApp(App):
         if self._stopped:
             return
         self._stopped = True
+        self._note = ""  # e.g. "press q again", answered
         self._connection = "disconnecting…"
+        if n := len(self._moving()):
+            # stop() waits for hooks, up to downloads.on_complete_timeout
+            self._connection = (f"waiting for {n} book{'s' if n > 1 else ''} to finish "
+                                "moving, then disconnecting…")
         self._refresh_status()
         if self._socket:
             self._socket.cancel()
@@ -472,27 +656,41 @@ class EbooksApp(App):
     # --- searches pane --------------------------------------------------
 
     def _rebuild_sidebar(self, highlight: str | None = None):
-        """Refill the sidebar, newest first, keeping the highlight where it was
-        (or moving it to the entry with option id `highlight`)."""
+        """Refill the sidebar, newest first in each section, keeping the
+        highlight where it was (or moving it to the entry with option id
+        `highlight`)."""
         sidebar = self.query_one(SearchList)
         if highlight is None and (current := sidebar.highlighted_option) is not None:
             highlight = current.id
-        old_index = sidebar.highlighted
-        entries = sorted([*self.searches, *self._live.values()], key=_entry_time, reverse=True)
-        self._entries = {_entry_id(e): e for e in entries}
+        before = list(self._entries)  # in the order they were shown
+        books = sorted(self._books.values(), key=lambda r: r.created_at, reverse=True)
+        searches = sorted([*self.searches, *self._live.values()], key=_entry_time, reverse=True)
+        self._entries = {_entry_id(e): e for e in [*books, *searches]}
+        options = [Option(_entry_label(e), id=_entry_id(e)) for e in searches]
+        if books:
+            options = [
+                Option(_heading("books"), id=BOOKS_HEADING, disabled=True),
+                *(Option(_entry_label(b), id=_entry_id(b)) for b in books),
+                Option(_heading("searches"), id=SEARCHES_HEADING, disabled=True),
+                *options,
+            ]
+        # With only searches, the border says what they are
+        sidebar.border_title = None if books else "searches"
         with self.prevent(OptionList.OptionHighlighted):
-            sidebar.set_options(Option(_entry_label(e), id=oid) for oid, e in self._entries.items())
-        if not entries:
+            sidebar.set_options(options)
+        if not self._entries:
             self._show_nothing()
             return
-        if highlight in self._entries:
-            index = sidebar.get_option_index(highlight)
-        else:  # e.g. dismissed: stay put, as far as the list goes
-            index = min(old_index or 0, len(entries) - 1)
+        if highlight not in self._entries:
+            # e.g. dismissed: the next one along, else the one before
+            i = before.index(highlight) if highlight in before else 0
+            candidates = [*before[i + 1:], *reversed(before[:i])]
+            highlight = next((oid for oid in candidates if oid in self._entries),
+                             next(iter(self._entries)))
         with self.prevent(OptionList.OptionHighlighted):
-            sidebar.highlighted = index
-        # Whatever is highlighted now is what the results pane should show
-        self.show(self._entries[sidebar.highlighted_option.id])
+            sidebar.highlighted = sidebar.get_option_index(highlight)
+        # Whatever is highlighted now is what the main pane should show
+        self.show(self._entries[highlight])
 
     def _search_updated(self, r: Request):
         """A search changed state: follow it in the sidebar, and open its
@@ -513,27 +711,43 @@ class EbooksApp(App):
             if not self.query_one(SearchInput).has_focus:
                 self.query_one(ResultsTable).focus()
             return
-        is_new = r.id not in self._live
-        self._live[r.id] = r
+        self._live_updated(self._live, r)
+
+    def _book_updated(self, r: Request):
+        """A book changed state, or its hook did: follow it in BOOKS."""
+        self._live_updated(self._books, r)
+
+    def _live_updated(self, entries: dict[str, Request], r: Request):
+        """Add `r` to the sidebar, or replace its earlier snapshot in place."""
+        is_new = r.id not in entries
+        entries[r.id] = r
         if is_new:
             self._rebuild_sidebar()
-        else:
-            self._entries[_entry_id(r)] = r
-            self.query_one(SearchList).replace_option_prompt(_entry_id(r), _entry_label(r))
-            if isinstance(self.shown, Request) and self.shown.id == r.id:
-                self.show(r)
+            return
+        self._entries[_entry_id(r)] = r
+        self.query_one(SearchList).replace_option_prompt(_entry_id(r), _entry_label(r))
+        if isinstance(self.shown, Request) and self.shown.id == r.id:
+            self.show(r)
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted):
         # Moving through the list previews each search's results, once it settles
         if self._preview:
             self._preview.stop()
-        entry = self._entries[event.option.id]
-        self._preview = self.set_timer(PREVIEW_DELAY, lambda: self.show(entry))
+        oid = event.option.id
+        # Looked up when the timer fires: a book or running search may have
+        # moved on by then
+        self._preview = self.set_timer(
+            PREVIEW_DELAY, lambda: (entry := self._entries.get(oid)) and self.show(entry))
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected):
         if self._preview:
             self._preview.stop()
         entry = self._entries[event.option.id]
+        if _is_book(entry):
+            # Its details are already in the main pane; nothing to act on yet
+            self.show(entry)
+            self.note(describe_request(entry))
+            return
         if isinstance(entry, Request):
             if entry.state in _RETRYABLE:
                 self._retry_search(entry)
@@ -552,10 +766,20 @@ class EbooksApp(App):
         self._live.pop(failed.id, None)
         self._rebuild_sidebar()
 
-    def action_delete_search(self):
+    def action_delete_entry(self):
         option = self.query_one(SearchList).highlighted_option
         entry = self._entries.get(option.id) if option else None
         if entry is None:
+            return
+        if _is_book(entry):
+            # Only the sidebar's record goes: no y/n, nothing on disk is touched
+            if not entry.settled:
+                doing = "moving" if entry.state.finished else "in progress"
+                self.note(f"{book_title(entry)} is still {doing}")
+                return
+            del self._books[entry.id]
+            self._replies.pop(entry.id, None)
+            self._rebuild_sidebar()
             return
         if isinstance(entry, PastSearch):
             self._deleting = entry
@@ -618,6 +842,9 @@ class EbooksApp(App):
     def show(self, entry: Entry):
         if entry is self.shown:
             return
+        if _is_book(entry):
+            self._show_book(entry)
+            return
         if isinstance(entry, Request):
             self._show_live(entry)
             return
@@ -674,9 +901,11 @@ class EbooksApp(App):
         return " · ".join(parts)
 
     def _clear_results(self, shown: Entry | None) -> ResultsTable:
-        """Empty the results pane, columns too, for `shown`."""
+        """Empty the results pane, columns too, for `shown`, and show it."""
         self.shown = shown
         table = self.query_one(ResultsTable)
+        table.display = True
+        self.query_one(BookDetails).display = False
         table.clear(columns=True)
         self._rows = {}
         self._row_for_line = {}
@@ -689,6 +918,16 @@ class EbooksApp(App):
         table = self._clear_results(r)
         table.border_title = f"results: {search_query(r)}"
         table.border_subtitle = r.error if r.state is RequestState.FAILED else search_progress(r)
+
+    def _show_book(self, r: Request):
+        """A book: how its request went, in place of the results table."""
+        self._clear_results(r)
+        self.query_one(ResultsTable).display = False
+        details = self.query_one(BookDetails)
+        details.display = True
+        details.border_title = f"book: {book_title(r)}"
+        details.border_subtitle = book_progress(r)
+        details.update(book_details(r, self._replies.get(r.id, ())))
 
     def _show_nothing(self):
         """No searches at all, e.g. the last one was just deleted."""
@@ -726,7 +965,10 @@ class EbooksApp(App):
         item = self._rows[event.row_key.value]
         current = self._latest.get(item.request)
         if current and current.state is RequestState.DONE:
-            self.note(f"already downloaded: {current.path}")
+            if current.hook is HookState.DONE:
+                self.note(f"already downloaded, and moved: {item.title}")
+            else:
+                self.note(f"already downloaded: {current.path}")
         elif current and current.state not in _RETRYABLE:
             self.note(f"already requested: {item.title}")
         elif self._is_offline(item.bot):

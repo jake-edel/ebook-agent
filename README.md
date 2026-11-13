@@ -96,9 +96,15 @@ At 5 MiB the file is rotated: the old one becomes `agent.log.1`, and the 3 most 
 python ebooks_tui.py
 ```
 
-It connects to IRC and browses your past searches in `searches/`. Move with `j`/`k` (or the arrows), `Enter`, `l` or `→` to go into a search's results, and `h`, `←` or `Esc` to come back. Results list the epubs first, then the other formats below a divider. `Enter` on a result requests that book: the first column shows how it's going (`…` waiting, `42%`, `✓` saved, `✗` failed), and the status bar has the details. `q` quits, and asks first if a request is still in progress.
+It connects to IRC and browses your past searches in `searches/`. Move with `j`/`k` (or the arrows), `Enter`, `l` or `→` to go into a search's results, and `h`, `←` or `Esc` to come back. Results list the epubs first, then the other formats below a divider. `Enter` on a result requests that book: the first column shows how it's going (`…` waiting, `42%`, `⇢` being moved by the post-download hook, `✓` done, `⚠` the hook failed, `✗` failed), and the status bar has the details.
 
-The TUI serves the Unix socket too, so socket clients keep working while it's open (their requests show up in the TUI). It can't run beside `ebooks_agent.py`. Searching from the TUI is next: see [`docs/tui-plan.md`](docs/tui-plan.md).
+`s` opens a search prompt (Enter sends it, Esc cancels). The search shows up at the top of the sidebar at once, and its results open when they arrive. `d` on a past search deletes its file, after a `y/n`.
+
+Every book requested this session, from the TUI or over the socket, is listed under BOOKS at the top of the sidebar, newest first: `…` waiting, `⇣` arriving, `⇢` being moved by the hook, `✓` done, `⚠` the hook failed (the book is still in `downloads/`), `✗` failed. Highlighting one shows its details in the main pane, with the hook's outcome and what the bot said. `d` dismisses a finished one from the list (nothing on disk is touched). The list isn't kept between sessions.
+
+`q` quits, and asks first if a request is still in progress or a book is still being moved. Quitting waits for a running hook to finish, rather than killing it partway.
+
+The TUI serves the Unix socket too, so socket clients keep working while it's open (their requests show up in the TUI). It can't run beside `ebooks_agent.py`. What's next: see [`docs/tui-plan.md`](docs/tui-plan.md).
 
 ### The socket
 

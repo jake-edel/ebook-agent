@@ -133,7 +133,7 @@ Built in thin slices, each one usable on its own. Using each stage decides the n
 | — | Delete past searches: `d` on one in the sidebar asks `[y/n]` in place of the search prompt, and only `y` deletes its file (any other key, or focus moving away, says no; keys don't reach anything else meanwhile) | done |
 | 4 | Filter results: `/` narrows the table as you type, `Esc` clears | |
 | 5a | The hook's outcome reaches frontends: `Request.hook` (`running`, `done`, `failed`) and `hook_error`, sent as `RequestUpdated`. See *Stage 5: books* | done |
-| 5b | A BOOKS section in the sidebar: transfers that turn into downloads, the hook's outcome, details in the main pane, `d` to dismiss. A running hook counts as in progress for `q`. See *Stage 5: books* | |
+| 5b | A BOOKS section in the sidebar: transfers that turn into downloads, the hook's outcome, details in the main pane, `d` to dismiss. A running hook counts as in progress for `q`. See *Stage 5: books* | done |
 | 5c | A log buffer for notices not linked to a request, only if 5b leaves one missing | |
 | 6 | Polish from use: ~~offline bots greyed out~~ (done: a bot not in the channel has its rows dimmed with `○`, live, and the subtitle names them; Enter on one is refused; while not joined nobody counts as offline), sorting, `?` help, `gg`/`G`, the TUI as the default with `--headless` | |
 
@@ -181,8 +181,8 @@ hook_error: str | None = None  # when FAILED, e.g. "exit 23: rsync: connection r
 
 - One `OptionList` with section header rows (not selectable), so `j`/`k`, `h`/`l` and focus work as now. BOOKS is above SEARCHES, and hidden while empty.
 - Newest first, by when it was requested. A book that finishes doesn't move.
-- Markers: `…` pending or waiting, `⇣` transferring, `⇢` hook running, `✓` done (moved, or saved if there's no hook), `⚠` hook failed (the book is still in `downloads/`), `✗` failed, `–` cancelled. The results table's state column uses the same ones.
-- Highlighting a book shows its details in the main pane: the request line, bot, size, timings, the bot's replies (`BotMessage.request_id`), and the hook's outcome or the local path.
+- Markers: `…` pending or waiting, `⇣` transferring, `⇢` hook running, `✓` done (moved, or saved if there's no hook), `⚠` hook failed (the book is still in `downloads/`), `✗` failed, `–` cancelled. The results table's state column uses the same ones, except that it shows the percentage while a book arrives. Long titles are cut off with `…`, not wrapped: one book, two lines.
+- Highlighting a book shows its details in the main pane: the request line, its state, size, when it was requested, the hook's outcome or the local path, and the bot's replies (`BotMessage.request_id`, the last 50). `Enter` on a book only repeats its state in the status bar.
 - `d` dismisses a finished book. One still downloading or moving is refused with a note. No y/n: nothing on disk is lost.
 - The status bar follows the hook: `X: downloaded, moving…`, then `X: moved` or `X: hook failed (…), kept in downloads/`.
 - `q` counts a running hook as in progress: "1 book still moving: press q again to quit". Quitting then waits for the hook to finish (up to `on_complete_timeout`) and says so, rather than killing it partway.
