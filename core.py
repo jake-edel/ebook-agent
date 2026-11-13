@@ -57,6 +57,14 @@ class RequestState(enum.StrEnum):
         return self in (RequestState.DONE, RequestState.FAILED, RequestState.CANCELLED)
 
 
+class HookState(enum.StrEnum):
+    """The post-download hook (downloads.on_complete), run on a book once it's DONE."""
+    RUNNING = "running"
+    DONE = "done"
+    # The book did download: it's still at Request.path (see hook_error)
+    FAILED = "failed"
+
+
 @dataclass(frozen=True)
 class Request:
     """A snapshot of one search or book request. A new snapshot replaces the old one on every change."""
@@ -80,6 +88,17 @@ class Request:
     path: Path | None = None
     # Set when FAILED: a human-readable reason
     error: str | None = None
+    # The hook, for a DONE book when one is configured; else None. It's
+    # already RUNNING in the DONE snapshot, so nobody sees a book whose hook
+    # hasn't started. It doesn't change `state`, and cancel() doesn't stop it.
+    hook: HookState | None = None
+    # Set when the hook FAILED: why, e.g. "exit 23: rsync: connection refused"
+    hook_error: str | None = None
+
+    @property
+    def settled(self) -> bool:
+        """Finished, with no hook still running: nothing more will happen to it."""
+        return self.state.finished and self.hook is not HookState.RUNNING
 
 
 # --- connection -------------------------------------------------------------

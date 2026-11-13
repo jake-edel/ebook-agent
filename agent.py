@@ -8,6 +8,7 @@ import logging
 import ssl
 import time
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import irc3
 
@@ -17,6 +18,7 @@ from core import (
     BotMessage,
     ConnectionState,
     Event,
+    HookState,
     MembersChanged,
     Request,
     RequestKind,
@@ -384,16 +386,32 @@ class EbooksAgent:
             self._update(request_id, state=RequestState.FAILED,
                          error="internal error (see agent log)")
         else:
-            self._update(request_id, state=RequestState.DONE, path=path)
             # The book is complete under its final name. DONE first: the hook
             # is ours, not the request's, so cancel() no longer applies, but
-            # it's still in this task, so stop() and wait() wait for it.
+            # it's still in this task, so stop() and wait() wait for it. The
+            # same snapshot says it's RUNNING, so no frontend sees a DONE book
+            # whose hook hasn't started.
             dl = self._config.downloads
-            if dl.on_complete and self._requests[request_id].kind is RequestKind.BOOK:
-                try:
-                    await run_hook(dl.on_complete, path, dl.on_complete_timeout)
-                except Exception:
-                    log.exception("Hook failed unexpectedly for %s", path)
+            hook = bool(dl.on_complete) and self._requests[request_id].kind is RequestKind.BOOK
+            self._update(request_id, state=RequestState.DONE, path=path,
+                         hook=HookState.RUNNING if hook else None)
+            if hook:
+                await self._run_hook(request_id, path)
+
+    async def _run_hook(self, request_id: str, path: Path):
+        dl = self._config.downloads
+        error = "cancelled"  # if this task is cancelled (the hook is killed)
+        try:
+            error = await run_hook(dl.on_complete, path, dl.on_complete_timeout)
+        except Exception:
+            log.exception("Hook failed unexpectedly for %s", path)
+            error = "internal error (see agent log)"
+        finally:
+            # Not _update(): the request has finished, the hook hasn't
+            old = self._requests[request_id]
+            self._set(dataclasses.replace(
+                old, updated_at=time.time(),
+                hook=HookState.FAILED if error else HookState.DONE, hook_error=error))
 
     def _update(self, request_id: str, **changes):
         old = self._requests[request_id]

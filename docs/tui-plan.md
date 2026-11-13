@@ -132,8 +132,61 @@ Built in thin slices, each one usable on its own. Using each stage decides the n
 | 3 | Search from the TUI: `s` opens a one-line `@search` prompt (Enter sends, Esc cancels, a rejected query keeps it open with the reason). The search appears at the top of the sidebar at once, following its state (`queued`, `searching…`, `receiving 40%`), including searches made over the socket. Its results always open when they arrive, without taking focus from the prompt. A failed search stays in the sidebar with `✗` and its reason: Enter runs it again, `d` dismisses it | done |
 | — | Delete past searches: `d` on one in the sidebar asks `[y/n]` in place of the search prompt, and only `y` deletes its file (any other key, or focus moving away, says no; keys don't reach anything else meanwhile) | done |
 | 4 | Filter results: `/` narrows the table as you type, `Esc` clears | |
-| 5 | See what's happening: transfers (with cancel), downloads, the log. Where they live is decided by stages 2–4 | |
+| 5a | The hook's outcome reaches frontends: `Request.hook` (`running`, `done`, `failed`) and `hook_error`, sent as `RequestUpdated`. See *Stage 5: books* | done |
+| 5b | A BOOKS section in the sidebar: transfers that turn into downloads, the hook's outcome, details in the main pane, `d` to dismiss. A running hook counts as in progress for `q`. See *Stage 5: books* | |
+| 5c | A log buffer for notices not linked to a request, only if 5b leaves one missing | |
 | 6 | Polish from use: ~~offline bots greyed out~~ (done: a bot not in the channel has its rows dimmed with `○`, live, and the subtitle names them; Enter on one is refused; while not joined nobody counts as offline), sorting, `?` help, `gg`/`G`, the TUI as the default with `--headless` | |
+
+### Stage 5: books
+
+The sketch's separate DOWNLOADS and TRANSFERS sections are one **BOOKS** section: a transfer that finishes *is* a download, so its row stays put and only its marker changes, the way a live search becomes a past one.
+
+Why not list `downloads/`: with a post-download hook that moves books away (e.g. `rsync --remove-source-files`), the folder is empty almost all the time. So BOOKS is a record of this session's book requests, from `requests()` and `RequestUpdated`, whoever made them (the TUI, or a socket client like Neovim's `:Ebook`). It's in memory only: nothing is kept across sessions.
+
+**5a: the hook reaches frontends.** Until now a request was `DONE` before its hook ran, and the hook's outcome was only logged, so a frontend would show a path that's about to disappear, or miss a failed move.
+
+```python
+class HookState(enum.StrEnum):
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
+
+# On Request:
+hook: HookState | None = None  # None: no hook configured, or a search
+hook_error: str | None = None  # when FAILED, e.g. "exit 23: rsync: connection refused"
+```
+
+- `DONE` still means the book downloaded, and `cancel()` still doesn't reach the hook. The hook is reported next to the state, not as another state.
+- The `DONE` snapshot already carries `hook=RUNNING` when a hook will run, so no frontend sees a finished book whose hook hasn't started. `Request.settled` (finished, and no hook running) is what to wait for: the socket follows a request until then.
+
+**5b: the BOOKS section.**
+
+```
+┌ BOOKS ──────────────────────┐
+│ ⇣ Penitent                  │
+│   Bsk · 64% of 2.2M         │
+│ … Tomb World                │
+│   waiting for Bsk           │
+│ ⇢ Purging of Kadillus       │
+│   moving…                   │
+│ ✓ Fall of Damnos            │
+│   20:14 · 2.2M · moved      │
+│ ⚠ The Rose in Darkness      │
+│   hook failed · in downloads│
+│ SEARCHES                    │
+│ ▸ warhammer                 │
+│   Nov 12 · 1000 results     │
+└─────────────────────────────┘
+```
+
+- One `OptionList` with section header rows (not selectable), so `j`/`k`, `h`/`l` and focus work as now. BOOKS is above SEARCHES, and hidden while empty.
+- Newest first, by when it was requested. A book that finishes doesn't move.
+- Markers: `…` pending or waiting, `⇣` transferring, `⇢` hook running, `✓` done (moved, or saved if there's no hook), `⚠` hook failed (the book is still in `downloads/`), `✗` failed, `–` cancelled. The results table's state column uses the same ones.
+- Highlighting a book shows its details in the main pane: the request line, bot, size, timings, the bot's replies (`BotMessage.request_id`), and the hook's outcome or the local path.
+- `d` dismisses a finished book. One still downloading or moving is refused with a note. No y/n: nothing on disk is lost.
+- The status bar follows the hook: `X: downloaded, moving…`, then `X: moved` or `X: hook failed (…), kept in downloads/`.
+- `q` counts a running hook as in progress: "1 book still moving: press q again to quit". Quitting then waits for the hook to finish (up to `on_complete_timeout`) and says so, rather than killing it partway.
+- Deferred: `Enter` on a book (cancel, retry, `xdg-open`), and re-running a failed hook.
 
 Deferred until something needs them: `:` commands, a mode system, several buffers or tabs, keymaps from config, the daemon split.
 

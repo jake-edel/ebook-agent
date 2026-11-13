@@ -10,7 +10,7 @@ import time
 import pytest
 
 import unix_socket as us
-from core import (AgentStatus, BotMessage, ConnectionState, Request, RequestKind, RequestState,
+from core import (AgentStatus, BotMessage, ConnectionState, HookState, Request, RequestKind, RequestState,
                   RequestUpdated)
 
 
@@ -39,8 +39,9 @@ class FakeAgent:
     for bad input (or a programming error) would be.
     """
 
-    def __init__(self, path="/books/Dune.epub", error=None, bug=None, hang=False):
-        self.path, self.error, self.bug, self.hang = path, error, bug, hang
+    def __init__(self, path="/books/Dune.epub", error=None, bug=None, hang=False, hook=None):
+        """`hook`: the hook's outcome, after a DONE snapshot with it running (None: no hook)."""
+        self.path, self.error, self.bug, self.hang, self.hook = path, error, bug, hang, hook
         self.calls = []
         self.subscribers = []
 
@@ -88,6 +89,12 @@ class FakeAgent:
         self.emit(BotMessage("Mallory", "hi", None))  # not linked to it
         if self.error:
             final = Request(**{**req.__dict__, "state": RequestState.FAILED, "error": self.error})
+        elif self.hook:
+            done = Request(**{**req.__dict__, "state": RequestState.DONE, "path": self.path,
+                              "hook": HookState.RUNNING})
+            self.emit(RequestUpdated(done))
+            final = Request(**{**done.__dict__, "hook": self.hook,
+                               "hook_error": "exit 23" if self.hook is HookState.FAILED else None})
         else:
             final = Request(**{**req.__dict__, "state": RequestState.DONE, "path": self.path})
         self.emit(RequestUpdated(final))
@@ -276,6 +283,16 @@ def test_request_command(runtime_dir):
                     {"cmd": "request", "line": "!Bsk Dune.epub"})
     assert agent.calls == [("request", "!Bsk Dune.epub")]
     assert replies[-1]["request"]["state"] == "done"
+
+
+@pytest.mark.parametrize("hook", [HookState.DONE, HookState.FAILED])
+def test_book_is_followed_until_its_hook_finishes(runtime_dir, hook):
+    # So Neovim's :Ebook can say the book was moved, or that moving it failed
+    replies = serve(FakeAgent(hook=hook), runtime_dir / "ebooks.sock",
+                    {"cmd": "request", "line": "!Bsk Dune.epub"})
+    updates = [r["request"] for r in replies if r["type"] == "RequestUpdated"]
+    assert [(u["state"], u["hook"]) for u in updates] == [
+        ("pending", None), ("done", "running"), ("done", hook.value)]
 
 
 def test_failed_request_is_the_final_snapshot(runtime_dir):

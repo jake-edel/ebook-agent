@@ -12,6 +12,7 @@ from core import (
     AgentStatus,
     BotMessage,
     ConnectionState,
+    HookState,
     MembersChanged,
     Request,
     RequestKind,
@@ -28,7 +29,7 @@ REQ = Request(id="r1", kind=RequestKind.BOOK, line="!Bsk Dune.epub", bot="Bsk",
               filename="Dune.epub", size=10, received=10, path=Path("/books/Dune.epub"))
 
 # Types allowed in core dataclass fields: plain values a JSON transport can carry
-_ALLOWED = {str, int, float, bool, type(None), Path, RequestKind, RequestState,
+_ALLOWED = {str, int, float, bool, type(None), Path, RequestKind, RequestState, HookState,
             ConnectionState, AgentStatus, Request}
 
 

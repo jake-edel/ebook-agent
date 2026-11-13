@@ -56,6 +56,7 @@ PENDING ──▶ WAITING ──▶ TRANSFERRING ──▶ DONE
 - `WAITING`: sent to the channel, no offer yet.
 - `TRANSFERRING`: offer accepted, bytes arriving. `received` and `size` give progress.
 - `DONE` sets `path`, and `FAILED` sets `error`.
+- A book's post-download hook (`downloads.on_complete`) is reported in `hook`, not as another state: the `DONE` snapshot already has `hook = RUNNING`, and a later one has `DONE` or `FAILED` (with `hook_error`; the book is still at `path`). `hook` is `None` for searches, or with no hook configured. `cancel()` doesn't stop a hook. `settled` (finished, and no hook running) says nothing more will happen to a request.
 
 ### Events
 

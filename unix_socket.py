@@ -9,7 +9,9 @@ replies until the server closes the connection:
        <- {"type": "BotMessage", "nick": "Bsk", "text": "...", "request_id": "1"}
        <- ... every change, progress included, ending with the RequestUpdated
           whose state is "done" (see request.path), "failed" (request.error)
-          or "cancelled"
+          or "cancelled". For a book with a post-download hook, the replies
+          go on until the hook's done: request.hook is "running" on the
+          "done" one, then "done" or "failed" (request.hook_error)
 
     -> {"cmd": "status"}
        <- {"type": "Status", "status": {"state": "ready", "server": ..., ...}}
@@ -248,7 +250,7 @@ async def _serve_client(agent, reader: asyncio.StreamReader, writer: asyncio.Str
             if isinstance(event, RequestUpdated) and event.request.id == req.id:
                 await _send(writer, to_dict(event))
                 final = event.request
-                if final.state.finished:
+                if final.settled:
                     if final.path:
                         log.info("Saved: %s", final.path)
                     else:
