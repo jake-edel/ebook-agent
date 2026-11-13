@@ -40,7 +40,7 @@ from server.unix_socket import SocketUnavailableError, unix_socket
 
 from .library import PastSearch, list_searches, load_search
 from .log import LogHandler, LogView
-from .styles import Styles
+from .styles import Styles, css_variables
 
 # --- keys -------------------------------------------------------------------
 #
@@ -81,7 +81,39 @@ PREVIEW_DELAY = 0.15
 # --- widgets ----------------------------------------------------------------
 
 class SearchList(OptionList):
+    """The sidebar. The highlighted entry is drawn plain, in the highlight's
+    own colours: its dim and coloured text (times, a failed book's marker)
+    would be unreadable on it, in every theme (the main pane next to it
+    shows the same, in colour). Use set_entries() and set_label(), so it
+    knows each entry's styled label."""
+
     BINDINGS = SEARCH_KEYS
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._labels: dict[str, Text] = {}  # styled, by option id
+        self._plain: str | None = None  # the option drawn plain
+
+    def set_entries(self, options: list[Option]):
+        self._labels = {o.id: o.prompt for o in options if not o.disabled}
+        self._plain = None  # every new option starts styled
+        self.set_options(options)
+
+    def set_label(self, option_id: str, label: Text):
+        self._labels[option_id] = label
+        self.replace_option_prompt(
+            option_id, Text(label.plain) if option_id == self._plain else label)
+
+    def watch_highlighted(self, highlighted: int | None):
+        if self._plain is not None:
+            self.replace_option_prompt(self._plain, self._labels[self._plain])
+            self._plain = None
+        if highlighted is not None:
+            oid = self.get_option_at_index(highlighted).id
+            if oid in self._labels:
+                self._plain = oid
+                self.replace_option_prompt(oid, Text(self._labels[oid].plain))
+        super().watch_highlighted(highlighted)
 
     # Moving skips the section headings. Where there's nothing but a heading
     # beyond the highlight, stay put: OptionList would wrap round to the far end.
@@ -515,6 +547,10 @@ class EbooksApp(App):
         except SocketUnavailableError as e:
             self.note(str(e))
 
+    def get_css_variables(self) -> dict[str, str]:
+        # Textual's, plus ours for app.tcss ($alert...)
+        return {**super().get_css_variables(), **css_variables(self.current_theme)}
+
     # --- the agent --------------------------------------------------------
 
     async def _follow(self, events):
@@ -650,7 +686,7 @@ class EbooksApp(App):
         # With only searches, the border says what they are
         sidebar.border_title = None if books else "searches"
         with self.prevent(OptionList.OptionHighlighted):
-            sidebar.set_options(options)
+            sidebar.set_entries(options)
         if not self._entries:
             self._show_nothing()
             return
@@ -703,7 +739,7 @@ class EbooksApp(App):
             self._rebuild_sidebar()
             return
         self._entries[_entry_id(r)] = r
-        self.query_one(SearchList).replace_option_prompt(_entry_id(r), _entry_label(r, self.text_styles))
+        self.query_one(SearchList).set_label(_entry_id(r), _entry_label(r, self.text_styles))
         if isinstance(self.shown, Request) and self.shown.id == r.id:
             self.show(r)
 
@@ -711,11 +747,15 @@ class EbooksApp(App):
         # Moving through the list previews each search's results, once it settles
         if self._preview:
             self._preview.stop()
-        oid = event.option.id
-        # Looked up when the timer fires: a book or running search may have
-        # moved on by then
-        self._preview = self.set_timer(
-            PREVIEW_DELAY, lambda: (entry := self._entries.get(oid)) and self.show(entry))
+        self._preview = self.set_timer(PREVIEW_DELAY, lambda: self._preview_entry(event.option.id))
+
+    def _preview_entry(self, oid: str):
+        # Looked up now: a book or running search may have moved on since it
+        # was highlighted. And the app may be closing: then nothing's left to show it in.
+        if self._ui_gone or not self.query(ResultsTable):
+            return
+        if (entry := self._entries.get(oid)) is not None:
+            self.show(entry)
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected):
         if self._preview:

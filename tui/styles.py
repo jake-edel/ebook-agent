@@ -1,11 +1,12 @@
 """How text looks, by what it means: the one place the TUI chooses colours.
 
 There are two kinds of colour in the TUI. The CSS (app.tcss) styles the
-widgets themselves, with the theme's variables ($accent, $panel...). Text
-inside them (sidebar entries, table cells, the book details, the log) is
-built in code, and gets its look from here: each role names a theme
-variable, resolved for the current theme. So everything follows the theme,
-and changing what "failed" looks like is one line.
+widgets themselves, with the theme's variables ($accent, $panel...), plus
+the few of our own from css_variables() below. Text inside them (sidebar
+entries, table cells, the book details, the log) is built in code, and gets
+its look from here: each role names a theme variable, resolved for the
+current theme. So everything follows the theme, and changing what "failed"
+looks like is one line.
 """
 
 from dataclasses import dataclass, fields
@@ -30,6 +31,27 @@ ROLES = {
     # Section headings: BOOKS, SEARCHES, "from the bot"
     "heading": "bold dim",
 }
+
+
+def css_variables(theme: Theme) -> dict[str, str]:
+    """Variables of our own for app.tcss, worked out for `theme`.
+
+    $alert and $on-alert: the y/n question's bar, and its text. The theme's
+    warning colour, solid, with text that contrasts with it. Not Textual's
+    $warning-muted: that's a blend toward the background, and an ANSI theme
+    can't blend (a terminal colour has no RGB), so it came out as solid
+    yellow under the terminal's light text (1.4:1 in an Omarchy theme).
+
+    The text is `auto`: Textual picks black or white, whichever contrasts
+    more with the bar (some themes' warning is a mid-tone: solarized's).
+    ANSI themes can't compute that either: they get the terminal's black,
+    which in a dark theme is its background colour, so it's dark.
+    """
+    variables = theme.to_color_system().generate()
+    warning = variables["warning"]
+    if warning.startswith("ansi_"):
+        return {"alert": warning, "on-alert": "ansi_black"}
+    return {"alert": warning, "on-alert": "auto 90%"}
 
 
 @dataclass(frozen=True)

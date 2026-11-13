@@ -1511,3 +1511,49 @@ def test_an_unknown_theme_is_a_config_error():
     ebooks_tui.check_theme("gruvbox")  # fine
     with pytest.raises(ConfigError, match=r"tui.theme: unknown theme 'gruvbx' \(one of: .*gruvbox"):
         ebooks_tui.check_theme("gruvbx")
+
+
+def test_the_highlighted_entry_is_drawn_plain(two_searches):
+    # Its dim and coloured text would be unreadable on the highlight
+    agent = FakeAgent()
+
+    def spans(app, index):
+        return app.query_one(SearchList).get_option_at_index(index).prompt.spans
+
+    async def steps(app, pilot):
+        book(agent, state=S.FAILED, error="No DCC offer")
+        await pilot.pause()
+        before = (spans(app, 1), spans(app, 3))  # the book; the highlighted search
+        await pilot.press("k")  # onto the book
+        after = (spans(app, 1), spans(app, 3))
+        agent.update(agent.requests()[0].id, error="still no offer")  # while highlighted
+        await pilot.pause()
+        return before, after, spans(app, 1), sidebar(app)[1]
+
+    (book_before, search_before), (book_after, search_after), updated, entry = run_app(
+        two_searches, steps, agent=agent)
+    assert book_before and not search_before
+    assert not book_after and search_after  # the plain one moved with the highlight
+    # An update to it while highlighted stays plain, with the new text
+    assert not updated and entry == ("✗ Frank Herbert - Dune (Retail)", "still no offer")
+
+
+@pytest.mark.parametrize("theme, alert, on_alert", [
+    # ANSI: solid yellow, the terminal's black on it (not its light text)
+    ("ansi-dark", "ansi_yellow", "ansi_black"),
+    # Others: the theme's warning, and whichever of black or white reads best on it
+    ("tokyo-night", "#DFAF68", "auto 90%"),
+])
+def test_the_yn_bar_has_readable_colours(theme, alert, on_alert):
+    from tui.styles import css_variables
+    assert css_variables(BUILTIN_THEMES[theme]) == {"alert": alert, "on-alert": on_alert}
+
+
+def test_the_yn_bar_uses_them(two_searches):
+    async def steps(app, pilot):
+        await pilot.press("d")
+        prompt = app.query_one(ConfirmPrompt)
+        return prompt.styles.background, prompt.styles.color
+
+    background, color = run_app(two_searches, steps)
+    assert background.ansi is not None and color.ansi is not None  # terminal colours, by default

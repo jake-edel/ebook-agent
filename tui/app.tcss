@@ -49,7 +49,9 @@ SearchInput, SearchInput:focus {
 ConfirmPrompt {
     height: 1;
     padding: 0 1;
-    background: $warning-muted;
+    /* $alert, $on-alert: see css_variables() in styles.py */
+    background: $alert;
+    color: $on-alert;
 }
 #status {
     height: 1;
