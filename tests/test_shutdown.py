@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from agent import EbooksAgent
+from server.agent import EbooksAgent
 from config import Config, IrcConfig
 from core import ConnectionState, RequestState, StatusChanged
 

@@ -4,11 +4,11 @@ import asyncio
 
 import pytest
 
-import plugin
-from agent import EbooksAgent
+from server import plugin
+from server.agent import EbooksAgent
 from config import Config, IrcConfig
 from core import ConnectionState
-from dcc import FileTooLargeError, InvalidOfferError
+from server.dcc import FileTooLargeError, InvalidOfferError
 
 from conftest import OUR_NICK, PUBLIC_IP, FakeBot, ip_int, make_plugin, mask, offer_text
 
@@ -287,11 +287,11 @@ def test_messages_to_us_logged_verbatim(caplog, line, expected):
         bot.dispatch(line)
         await asyncio.sleep(0)  # irc3 runs handlers via call_soon
 
-    with caplog.at_level("INFO", logger="plugin"):
+    with caplog.at_level("INFO", logger="server.plugin"):
         run(go())
     # Only the verbatim lines; the DCC handler may log its own verdict too
     logged = [r.getMessage() for r in caplog.records
-              if r.name == "plugin" and r.getMessage().startswith(("PRIVMSG", "NOTICE"))]
+              if r.name == "server.plugin" and r.getMessage().startswith(("PRIVMSG", "NOTICE"))]
     assert logged == ([expected] if expected else [])
 
 
@@ -300,7 +300,7 @@ def test_messages_to_us_logged_verbatim(caplog, line, expected):
 @pytest.mark.parametrize("show, logged", [(True, True), (False, False)])
 def test_show_private_messages(ebooks_plugin, caplog, show, logged):
     ebooks_plugin.show_private_messages = show
-    with caplog.at_level("INFO", logger="plugin"):
+    with caplog.at_level("INFO", logger="server.plugin"):
         ebooks_plugin.on_message(mask=mask("Search"), command="NOTICE",
                                  target=OUR_NICK, text="hello there")
     assert ("hello there" in caplog.text) is logged

@@ -8,7 +8,7 @@ import stat
 import pytest
 
 from config import LogConfig
-from logfile import LogFile, LogFileError
+from server.logfile import LogFile, LogFileError
 
 log = logging.getLogger("test_logfile")
 

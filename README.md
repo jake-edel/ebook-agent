@@ -181,16 +181,22 @@ The tests never touch the network or your real `downloads/` and `searches/` fold
 ```
 ebooks_agent.py   — entry point: flags, startup, runs until Ctrl+C
 ebooks_tui.py     — entry point for the TUI (in progress)
-tui/              — the TUI: app.py (interface and keys), library.py (reads searches from disk)
+
+core.py           — the core interface: requests, events and status, shared by every frontend
 config.py         — loads and validates settings (defaults, overridden by config.toml)
 config.example.toml — documented template for config.toml
-logfile.py        — the log file: format, session lines, rotation
-core.py           — the core interface: requests, events and status, shared by every frontend
-agent.py          — EbooksAgent class, owns the IRC connection and implements the core interface
-plugin.py         — irc3 plugin, handles IRC events and DCC offers
-unix_socket.py    — Unix socket server (JSON lines), the agent's input
-dcc.py            — DCC file transfer and zip extraction
 results.py        — parser for SearchBot result files
+
+server/           — the agent side
+  agent.py        — EbooksAgent class, owns the IRC connection and implements the core interface
+  plugin.py       — irc3 plugin, handles IRC events and DCC offers
+  dcc.py          — DCC file transfer and zip extraction
+  hook.py         — the post-download hook (downloads.on_complete)
+  unix_socket.py  — Unix socket server (JSON lines), the agent's input
+  logfile.py      — the log file: format, session lines, rotation
+
+tui/              — the TUI: app.py (interface and keys), library.py (reads searches from disk)
+
 downloads/        — where books are saved
 searches/         — where search results files are saved
 tests/            — pytest suite

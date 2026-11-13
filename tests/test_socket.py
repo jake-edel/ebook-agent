@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-import unix_socket as us
+from server import unix_socket as us
 from core import (AgentStatus, BotMessage, ConnectionState, HookState, Request, RequestKind, RequestState,
                   RequestUpdated)
 

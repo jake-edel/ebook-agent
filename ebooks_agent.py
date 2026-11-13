@@ -2,7 +2,7 @@
 
 Runs in the foreground: it stays attached to the terminal and logs what it's
 doing (connection, each request, downloads, results) until Ctrl+C or SIGTERM.
-Searches come in through the Unix socket; see unix_socket.py.
+Searches come in through the Unix socket; see server/unix_socket.py.
 `--socket-path` prints where that is, for clients, and exits.
 """
 
@@ -13,10 +13,10 @@ import signal
 import sys
 from pathlib import Path
 
-from agent import EbooksAgent
+from server.agent import EbooksAgent
 from config import Config, ConfigError, config_file, load_config
-from logfile import LogFile, LogFileError
-from unix_socket import (
+from server.logfile import LogFile, LogFileError
+from server.unix_socket import (
     SocketUnavailableError,
     UnsafeSocketPathError,
     claim_socket_path,

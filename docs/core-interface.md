@@ -1,6 +1,6 @@
 # Core interface
 
-The contract between the IRC/DCC core and anything that drives it. The types live in [`core.py`](../core.py); `EbooksAgent` in [`agent.py`](../agent.py) implements it.
+The contract between the IRC/DCC core and anything that drives it. The types live in [`core.py`](../core.py); `EbooksAgent` in [`server/agent.py`](../server/agent.py) implements it.
 
 ## Why this shape
 
@@ -80,7 +80,7 @@ There's one `RequestUpdated` carrying the whole snapshot, rather than an event p
 
 ### Transports
 
-`unix_socket.py` is the first: one JSON-lines command per connection, answered with that request's events (see the README). A daemon client would need more of the interface over it: a subscription to every event, `requests()` and `cancel()`.
+`server/unix_socket.py` is the first: one JSON-lines command per connection, answered with that request's events (see the README). A daemon client would need more of the interface over it: a subscription to every event, `requests()` and `cancel()`.
 
 ## Decisions
 

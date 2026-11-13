@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from agent import EbooksAgent
+from server.agent import EbooksAgent
 from config import Config, ConfigError, DownloadsConfig, IrcConfig, load_config
 from core import ConnectionState, HookState, RequestState, RequestUpdated, to_dict
-from hook import hook_argv, run_hook
+from server.hook import hook_argv, run_hook
 
 from conftest import OUR_NICK, make_plugin, mask, offer_text
 
@@ -56,7 +56,7 @@ def test_success_runs_with_path_and_env(tmp_path, caplog):
     dest.mkdir()
     code = ("import os, shutil, sys; assert os.environ['EBOOK_PATH'] == sys.argv[1];"
             f"shutil.move(sys.argv[1], {str(dest)!r}); print('moved')")
-    with caplog.at_level(logging.INFO, logger="hook"):
+    with caplog.at_level(logging.INFO, logger="server.hook"):
         assert asyncio.run(run_hook(py(code), path, 5)) is None
     assert (dest / "Dune.epub").exists() and not path.exists()
     assert "moved" in caplog.text  # output goes to the log
@@ -93,7 +93,7 @@ def test_timeout_kills_the_hook(tmp_path, caplog):
 
 
 def test_long_output_is_truncated(tmp_path, caplog):
-    with caplog.at_level(logging.INFO, logger="hook"):
+    with caplog.at_level(logging.INFO, logger="server.hook"):
         assert asyncio.run(run_hook(py("print('x' * 100000)"), tmp_path / "a.epub", 5)) is None
     assert "output truncated" in caplog.text and "x" * 100000 not in caplog.text
 

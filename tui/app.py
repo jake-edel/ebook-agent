@@ -31,7 +31,7 @@ from core import (
     StatusChanged,
 )
 from results import ResultItem
-from unix_socket import SocketUnavailableError, unix_socket
+from server.unix_socket import SocketUnavailableError, unix_socket
 
 from .library import PastSearch, list_searches, load_search
 

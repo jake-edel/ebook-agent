@@ -11,7 +11,7 @@ import pytest
 
 import ebooks_agent
 from config import Config, LogConfig
-import unix_socket as us
+from server import unix_socket as us
 
 from test_socket import FakeAgent, ask, runtime_dir  # noqa: F401
 
@@ -120,7 +120,7 @@ def test_session_is_logged_to_the_file(runtime_dir, monkeypatch, tmp_path):
             pass
 
         async def start(self):
-            logging.getLogger("agent").info("Connected to irc.example.net, joining #ebooks")
+            logging.getLogger("server.agent").info("Connected to irc.example.net, joining #ebooks")
 
         async def wait_ready(self, timeout):
             raise TimeoutError("Didn't join #ebooks within 30s")

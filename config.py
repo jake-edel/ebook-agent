@@ -28,7 +28,7 @@ class ConfigError(Exception):
 @dataclass(frozen=True)
 class IrcConfig:
     host: str = "irc.irchighway.net"
-    # TLS port. TLS is always on (see agent.py), so this must be a TLS port.
+    # TLS port. TLS is always on (see server/agent.py), so this must be a TLS port.
     port: int = 6697
     nick: str = "anjay"
     # What a /whois on us shows, besides the nick: the "user" part of
@@ -65,7 +65,7 @@ class DownloadsConfig:
     stall_timeout: float = 30.0
     # Command run on each finished book (not searches), e.g. to move it:
     # an argv list, run without a shell. The book's path replaces a "{path}"
-    # item, or is appended, and is in $EBOOK_PATH. Empty: no hook. See hook.py.
+    # item, or is appended, and is in $EBOOK_PATH. Empty: no hook. See server/hook.py.
     on_complete: tuple[str, ...] = ()
     # Seconds the hook may run before it's killed
     on_complete_timeout: float = 300.0

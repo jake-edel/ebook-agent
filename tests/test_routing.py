@@ -7,8 +7,8 @@ import zipfile
 
 import pytest
 
-import dcc
-import plugin
+from server import dcc
+from server import plugin
 from config import ConfigError, load_config
 
 from conftest import OUR_NICK, make_plugin, mask, offer_text

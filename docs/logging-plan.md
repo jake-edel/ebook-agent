@@ -15,7 +15,7 @@ What's missing for auditing:
 
 - **Timestamps.**
 - **Request ids.** You can't tell which `Message sent`, bot reply and DCC offer belong together.
-- **Request state changes.** Pending, waiting, transferring, done, failed and cancelled are only sent as events (`RequestUpdated`), never logged. So a cancellation, or a failure with its reason (e.g. the offer timeout), leaves no trace. The only exception is unexpected errors, which `agent.py` logs with a traceback.
+- **Request state changes.** Pending, waiting, transferring, done, failed and cancelled are only sent as events (`RequestUpdated`), never logged. So a cancellation, or a failure with its reason (e.g. the offer timeout), leaves no trace. The only exception is unexpected errors, which `server/agent.py` logs with a traceback.
 
 ## Decisions
 
@@ -78,7 +78,7 @@ The file is created with mode 0600: it holds your searches, the books you asked 
 
 ### How it's written
 
-A new module, `logfile.py`, sets up a `RotatingFileHandler` on the root logger, with the formatter above. Both entry points call it once the config is loaded **and the socket path is claimed**. A second instance that fails to claim the socket exits without touching the file, so only one process ever writes it or rotates it.
+A new module, `server/logfile.py`, sets up a `RotatingFileHandler` on the root logger, with the formatter above. Both entry points call it once the config is loaded **and the socket path is claimed**. A second instance that fails to claim the socket exits without touching the file, so only one process ever writes it or rotates it.
 
 - **`ebooks_agent.py`:** the console handler stays as it is. A filter on it hides messages sent to us when `show_private_messages` is off.
 - **`ebooks_tui.py`:** the file handler replaces the `NullHandler`, so TUI sessions get logged too. Nothing goes to the console.
@@ -92,11 +92,11 @@ Each change is logged where it happens, not by listening to the event stream. A 
 - **`EbooksAgent._set`:** one line each time a request's `state` changes (the progress-only updates are skipped). It includes the line, filename/size, path, error, or the state it was cancelled from.
 - **`EbooksAgent._set_state` / `start()` / `stop()`:** connection changes, worded as above.
 - **`EbooksPlugin._fetch` / `on_message` / `on_dcc_send`:** add the request key to the `>>` and `<<` lines, and log accepted DCC offers as `<<` lines.
-- **Session start/end:** `logfile.py` logs the start line, and an `atexit` hook logs the end line. A missing end line means the process crashed or was killed.
+- **Session start/end:** `server/logfile.py` logs the start line, and an `atexit` hook logs the end line. A missing end line means the process crashed or was killed.
 
 ## Stages
 
-1. **The file.** ✅ Done. `[log]` config, `logfile.py`, rotation, the 0600 mode, session lines, timestamps, and wiring into both entry points (so the TUI logs too). The existing log calls go to the file unchanged.
+1. **The file.** ✅ Done. `[log]` config, `server/logfile.py`, rotation, the 0600 mode, session lines, timestamps, and wiring into both entry points (so the TUI logs too). The existing log calls go to the file unchanged.
    - `backups` must be at least 1: `RotatingFileHandler` never rotates with 0, so the file would grow without limit.
    - The session end line records what ended a run, if it wasn't a normal shutdown (e.g. `---- session end: TimeoutError: Could not connect…`).
    - irc3 ran its own `logging.config.dictConfig`, which gave its loggers a stderr handler that doesn't propagate. That kept its errors out of the file, printed them over the TUI, and closed every handler already set up. `_IrcBot.logging_config` is now an empty incremental config, so irc3 leaves logging alone.

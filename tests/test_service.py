@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from agent import EbooksAgent
+from server.agent import EbooksAgent
 from config import Config, IrcConfig
 from core import (BotMessage, ConnectionState, MembersChanged, RequestKind, RequestState,
                   RequestUpdated, StatusChanged)
@@ -237,7 +237,7 @@ def test_members(agent):
 
 
 def test_members_changes_are_gathered_into_one_event(agent, monkeypatch):
-    import agent as agent_module
+    from server import agent as agent_module
     monkeypatch.setattr(agent_module, "MEMBERS_INTERVAL", 0.05)
 
     async def go():

@@ -26,9 +26,9 @@ from core import (
     RequestUpdated,
     StatusChanged,
 )
-from dcc import DownloadError
-from hook import run_hook
-from plugin import EbooksPlugin, check_query, check_request
+from .dcc import DownloadError
+from .hook import run_hook
+from .plugin import EbooksPlugin, check_query, check_request
 
 log = logging.getLogger(__name__)
 

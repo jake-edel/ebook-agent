@@ -2,7 +2,7 @@
 
 import asyncio
 
-from agent import EbooksAgent
+from server.agent import EbooksAgent
 
 
 def test_connects_over_tls():
@@ -25,7 +25,7 @@ def test_irc3_logs_go_to_our_handlers(caplog, tmp_path):
     import logging
 
     from config import LogConfig
-    from logfile import LogFile
+    from server.logfile import LogFile
 
     cfg = LogConfig(file=tmp_path / "agent.log")
     with LogFile(cfg, "test") as log_file:
@@ -46,7 +46,7 @@ async def _build():
 def test_reconnects_wait_longer_each_time(monkeypatch):
     import irc3
 
-    import agent as agent_module
+    from server import agent as agent_module
 
     async def go():
         bot = EbooksAgent()._build_bot()

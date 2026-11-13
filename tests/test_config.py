@@ -5,8 +5,9 @@ from pathlib import Path
 import pytest
 
 import config
-import dcc
-from agent import EbooksAgent
+from server import dcc
+from server.agent import EbooksAgent
+from server.plugin import EbooksPlugin
 from config import Config, ConfigError, load_config
 
 EXAMPLE = Path(config.__file__).parent / "config.example.toml"
@@ -175,8 +176,8 @@ def test_importing_dcc_creates_nothing(tmp_path):
     import subprocess
     import sys
 
-    for name in ("dcc.py", "config.py"):
-        shutil.copy(Path(dcc.__file__).parent / name, tmp_path / name)
+    for module in (dcc, config):  # dcc needs only config, from the top level
+        shutil.copy(module.__file__, tmp_path / Path(module.__file__).name)
     subprocess.run([sys.executable, "-c", "import dcc"], cwd=tmp_path, check=True)
     assert not (tmp_path / "downloads").exists()
 
@@ -193,7 +194,7 @@ def test_agent_uses_config(tmp_path):
     assert bot.config.nick == "cfg_nick"
     assert bot.config.host == "irc.example.net"
     assert bot.config.ssl is True  # always, whatever the config says
-    p = bot.get_plugin(__import__("plugin").EbooksPlugin)
+    p = bot.get_plugin(EbooksPlugin)
     assert p.channel == "#books"
     assert p.offer_timeout == 5.0
     assert p.downloads.config == cfg.downloads

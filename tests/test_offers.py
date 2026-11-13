@@ -3,8 +3,8 @@
 import pytest
 
 from config import DownloadsConfig
-from dcc import DownloadError, FileTooLargeError, InvalidOfferError
-from dcc import parse_dcc_offer as _parse
+from server.dcc import DownloadError, FileTooLargeError, InvalidOfferError
+from server.dcc import parse_dcc_offer as _parse
 
 MAX_DOWNLOAD_BYTES = DownloadsConfig().max_size_bytes
 

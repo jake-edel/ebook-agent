@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-import plugin
+from server import plugin
 from core import (
     AgentStatus,
     BotMessage,

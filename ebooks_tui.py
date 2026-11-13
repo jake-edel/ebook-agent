@@ -9,11 +9,11 @@ import logging
 import sys
 from pathlib import Path
 
-from agent import EbooksAgent
+from server.agent import EbooksAgent
 from config import ConfigError, config_file, load_config
-from logfile import LogFile, LogFileError
+from server.logfile import LogFile, LogFileError
 from tui.app import EbooksApp
-from unix_socket import SocketUnavailableError, claim_socket_path
+from server.unix_socket import SocketUnavailableError, claim_socket_path
 
 
 def main(argv=None):

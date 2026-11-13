@@ -6,9 +6,9 @@ import zipfile
 
 import pytest
 
-import dcc
-import unix_socket as us
-from dcc import (
+from server import dcc
+from server import unix_socket as us
+from server.dcc import (
     BadArchiveError,
     DownloadError,
     IncompleteDownloadError,

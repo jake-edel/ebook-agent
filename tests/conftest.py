@@ -8,9 +8,9 @@ import zipfile
 import pytest
 from irc3.utils import IrcString
 
-import plugin
+from server import plugin
 from config import Config, DownloadsConfig, IrcConfig
-from dcc import Downloads
+from server.dcc import Downloads
 
 # A real public address (example.com). Offers must point at public IPs, but
 # tests never actually connect to it — downloads are faked or use 127.0.0.1.

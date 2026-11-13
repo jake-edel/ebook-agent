@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
-import dcc
-from dcc import UnsafeFilenameError
+from server import dcc
+from server.dcc import UnsafeFilenameError
 
 from conftest import local_sender
 

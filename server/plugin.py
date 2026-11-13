@@ -12,7 +12,7 @@ import irc3
 
 from config import Config
 from core import ConnectionState, RequestState
-from dcc import DccOffer, DownloadError, Downloads, FileTooLargeError, InvalidOfferError
+from .dcc import DccOffer, DownloadError, Downloads, FileTooLargeError, InvalidOfferError
 
 log = logging.getLogger(__name__)
 

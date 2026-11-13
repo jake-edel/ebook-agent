@@ -7,8 +7,8 @@ import zipfile
 
 import pytest
 
-import dcc
-from dcc import BadArchiveError, FileTooLargeError
+from server import dcc
+from server.dcc import BadArchiveError, FileTooLargeError
 
 from conftest import local_sender
 
