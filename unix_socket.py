@@ -1,4 +1,4 @@
-"""Unix socket server: lets other processes (scripts, Neovim's :Ebook) drive the agent.
+"""Unix socket server: lets other processes (scripts, editors, other frontends) drive the agent.
 
 The protocol is JSON lines. A client connects, sends one command, and reads
 replies until the server closes the connection:

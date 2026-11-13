@@ -287,7 +287,7 @@ def test_request_command(runtime_dir):
 
 @pytest.mark.parametrize("hook", [HookState.DONE, HookState.FAILED])
 def test_book_is_followed_until_its_hook_finishes(runtime_dir, hook):
-    # So Neovim's :Ebook can say the book was moved, or that moving it failed
+    # So a client can tell the book was moved, or that moving it failed
     replies = serve(FakeAgent(hook=hook), runtime_dir / "ebooks.sock",
                     {"cmd": "request", "line": "!Bsk Dune.epub"})
     updates = [r["request"] for r in replies if r["type"] == "RequestUpdated"]

@@ -495,7 +495,7 @@ def test_state_column_survives_switching_searches(two_searches):
 
 
 def test_requests_from_elsewhere_show_on_their_rows(two_searches):
-    # e.g. Neovim's :Ebook over the socket, which the app serves too
+    # e.g. a socket client: the app serves the socket too
     agent = FakeAgent()
 
     async def steps(app, pilot):
@@ -769,7 +769,7 @@ def test_running_searches_cant_be_dismissed(two_searches):
 
 
 def test_searches_from_elsewhere_appear_too(two_searches):
-    # e.g. Neovim's :Ebook search over the socket
+    # e.g. a search made by a socket client
     agent = FakeAgent()
 
     async def steps(app, pilot):

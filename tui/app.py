@@ -1,8 +1,8 @@
 """The TUI app: search, browse past searches on disk, and request books from them.
 
-The app runs the agent (and the Unix socket, so Neovim's :Ebook keeps
-working) on Textual's event loop, and talks to it only through the core
-interface (core.AgentService).
+The app runs the agent (and the Unix socket, so socket clients keep
+working while it's open) on Textual's event loop, and talks to it only
+through the core interface (core.AgentService).
 """
 
 import asyncio
@@ -336,7 +336,7 @@ class EbooksApp(App):
         self._focus_before_search = None  # to go back to when the prompt closes
         self._deleting: PastSearch | None = None  # waiting for its y/n
         # The newest request for each line sent, whoever made it (us, or a
-        # socket client like Neovim)
+        # socket client)
         self._latest: dict[str, Request] = {}
         # The status bar: the connection, then the latest news
         self._connection = "starting…"

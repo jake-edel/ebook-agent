@@ -98,7 +98,7 @@ python ebooks_tui.py
 
 It connects to IRC and browses your past searches in `searches/`. Move with `j`/`k` (or the arrows), `Enter`, `l` or `→` to go into a search's results, and `h`, `←` or `Esc` to come back. Results list the epubs first, then the other formats below a divider. `Enter` on a result requests that book: the first column shows how it's going (`…` waiting, `42%`, `✓` saved, `✗` failed), and the status bar has the details. `q` quits, and asks first if a request is still in progress.
 
-The TUI serves the Unix socket too, so Neovim's `:Ebook` keeps working while it's open (its requests show up in the TUI). It can't run beside `ebooks_agent.py`. Searching from the TUI is next: see [`docs/tui-plan.md`](docs/tui-plan.md).
+The TUI serves the Unix socket too, so socket clients keep working while it's open (their requests show up in the TUI). It can't run beside `ebooks_agent.py`. Searching from the TUI is next: see [`docs/tui-plan.md`](docs/tui-plan.md).
 
 ### The socket
 
@@ -142,11 +142,11 @@ The replies to `search` and `request` are the agent's own events, one JSON objec
 {"type": "RequestUpdated", "request": {"id": "1", "state": "done", "path": "/home/jake/ebooks-cli/searches/20261108-143005 Foundation Asimov.txt", ...}}
 ```
 
-The last line is always a `RequestUpdated` whose `state` is `done` (see `path`), `failed` (see `error`) or `cancelled`. A command that can't be carried out gets `{"type": "Error", "error": "..."}` instead, and so does a client still waiting when the agent shuts down. If you hang up early, the request carries on and the file is still saved.
+The last line is always a `RequestUpdated` whose `state` is `done` (see `path`), `failed` (see `error`) or `cancelled`. For a book, with a post-download hook configured (`downloads.on_complete`), the `done` snapshot has `"hook": "running"`, and the replies go on until the hook finishes: the last one has `"hook": "done"`, or `"failed"` with the reason in `hook_error` (the book is then still at `path`). `hook` is `null` for searches, and when there's no hook. So a client should stop at the first snapshot that's finished and whose `hook` isn't `running`, or simply read until the connection closes. A command that can't be carried out gets `{"type": "Error", "error": "..."}` instead, and so does a client still waiting when the agent shuts down. If you hang up early, the request carries on and the file is still saved.
 
 Limits: the command must arrive within 10 seconds of connecting and be at most 8 KiB, and the line sent to IRC (`@search <query>` or the `!Bot` line) at most 350 bytes.
 
-The Neovim `:Ebook` command (`~/.dotfiles/nvim/lua/config/ebook.lua`) is a client of this socket.
+One example client is a Neovim `:Ebook` command (`~/.dotfiles/nvim/lua/config/ebook.lua`), maintained outside this repo.
 
 ## Testing
 

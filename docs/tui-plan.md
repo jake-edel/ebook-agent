@@ -141,7 +141,7 @@ Built in thin slices, each one usable on its own. Using each stage decides the n
 
 The sketch's separate DOWNLOADS and TRANSFERS sections are one **BOOKS** section: a transfer that finishes *is* a download, so its row stays put and only its marker changes, the way a live search becomes a past one.
 
-Why not list `downloads/`: with a post-download hook that moves books away (e.g. `rsync --remove-source-files`), the folder is empty almost all the time. So BOOKS is a record of this session's book requests, from `requests()` and `RequestUpdated`, whoever made them (the TUI, or a socket client like Neovim's `:Ebook`). It's in memory only: nothing is kept across sessions.
+Why not list `downloads/`: with a post-download hook that moves books away (e.g. `rsync --remove-source-files`), the folder is empty almost all the time. So BOOKS is a record of this session's book requests, from `requests()` and `RequestUpdated`, whoever made them (the TUI, or a socket client). It's in memory only: nothing is kept across sessions.
 
 **5a: the hook reaches frontends.** Until now a request was `DONE` before its hook ran, and the hook's outcome was only logged, so a frontend would show a path that's about to disappear, or miss a failed move.
 

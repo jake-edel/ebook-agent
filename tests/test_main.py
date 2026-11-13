@@ -73,7 +73,7 @@ def test_socket_failure_stops_the_process(runtime_dir):
 
 
 def test_socket_path_flag_prints_where_the_agent_listens(runtime_dir):
-    # What clients like Neovim's :Ebook run instead of guessing the location
+    # What socket clients run instead of guessing the location
     script = Path(ebooks_agent.__file__)
     out = subprocess.run(
         [sys.executable, str(script), "--socket-path"],
