@@ -36,15 +36,15 @@ Observations (from the sample: 996 Bsk, 2 artemis_serv, 2 Ashurbanipal; 856 epub
 An early sketch, not a spec: the stages below decide what actually gets built, by using each one.
 
 ```
-┌ SEARCHES ───────────────┬ results: warhammer ── 1000 matches · 14 lists ─────────────┐
-│ ▸ warhammer      1000   │  BOT    TITLE                                     TYPE  SIZE│
-│   dune             84   │▶ Bsk    Dan Abnett - Warhammer 40,000 - Penitent  epub  2.2M│
-│   foundation       31   │  Bsk    Danie Ware - The Rose in Darkness          epub  681K│
-│ DOWNLOADS               │  ░artemis_serv  Fall of Damnos (offline)          mobi  4.7M│
-│   Tomb World.epub  2.1M │  ...                                                        │
-│ TRANSFERS               │                                                             │
-│   ⇣ Penitent  ▓▓▓░ 64%  │                                                             │
-├─────────────────────────┴─────────────────────────────────────────────────────────────┤
+┌ SEARCHES ───────────────┬ results: warhammer ── 1000 matches · 14 lists ─────────────────┐
+│ ▸ warhammer      1000   │  BOT    TITLE                                     TYPE  SIZE   │
+│   dune             84   │▶ Bsk    Dan Abnett - Warhammer 40,000 - Penitent  epub  2.2M   │
+│   foundation       31   │  Bsk    Danie Ware - The Rose in Darkness          epub  681K  │
+│ DOWNLOADS               │  ░artemis_serv  Fall of Damnos (offline)          mobi  4.7M   │
+│   Tomb World.epub  2.1M │  ...                                                           │
+│ TRANSFERS               │                                                                │
+│   ⇣ Penitent  ▓▓▓░ 64%  │                                                                │
+├─────────────────────────┴────────────────────────────────────────────────────────────────┤
 │ NORMAL │ warhammer [/epub] 856/1000 │ Bsk: "You are in queue position 2" │ ● TLS 142.44… │
 └──────────────────────────────────────────────────────────────────────────────────────────┘
 ```
