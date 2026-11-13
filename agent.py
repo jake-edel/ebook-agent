@@ -25,6 +25,7 @@ from core import (
     StatusChanged,
 )
 from dcc import DownloadError
+from hook import run_hook
 from plugin import EbooksPlugin, check_query, check_request
 
 log = logging.getLogger(__name__)
@@ -384,6 +385,15 @@ class EbooksAgent:
                          error="internal error (see agent log)")
         else:
             self._update(request_id, state=RequestState.DONE, path=path)
+            # The book is complete under its final name. DONE first: the hook
+            # is ours, not the request's, so cancel() no longer applies, but
+            # it's still in this task, so stop() and wait() wait for it.
+            dl = self._config.downloads
+            if dl.on_complete and self._requests[request_id].kind is RequestKind.BOOK:
+                try:
+                    await run_hook(dl.on_complete, path, dl.on_complete_timeout)
+                except Exception:
+                    log.exception("Hook failed unexpectedly for %s", path)
 
     def _update(self, request_id: str, **changes):
         old = self._requests[request_id]

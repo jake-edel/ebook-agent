@@ -43,7 +43,7 @@ Everything works out of the box with the defaults. To change something, copy the
 cp config.example.toml config.toml
 ```
 
-`config.toml` is gitignored, so your local settings stay out of commits. `config.example.toml` lists every setting with its default and what it does: IRC host, nick and channel, the timeouts, the size limits, the downloads folder, and the log file.
+`config.toml` is gitignored, so your local settings stay out of commits. `config.example.toml` lists every setting with its default and what it does: IRC host, nick and channel, the timeouts, the size limits, the downloads folder, a command to run on each finished book (e.g. to move it into a library), and the log file.
 
 Any setting the file leaves out keeps its built-in default. The agent reads `config.toml` next to `ebooks_agent.py`, or another file if you pass one:
 

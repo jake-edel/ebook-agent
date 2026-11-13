@@ -63,6 +63,12 @@ class DownloadsConfig:
     connect_timeout: float = 15.0
     # Give up on a transfer after this many seconds without data
     stall_timeout: float = 30.0
+    # Command run on each finished book (not searches), e.g. to move it:
+    # an argv list, run without a shell. The book's path replaces a "{path}"
+    # item, or is appended, and is in $EBOOK_PATH. Empty: no hook. See hook.py.
+    on_complete: tuple[str, ...] = ()
+    # Seconds the hook may run before it's killed
+    on_complete_timeout: float = 300.0
 
     @property
     def max_size_bytes(self) -> int:
@@ -138,6 +144,11 @@ def _coerce(value: Any, typ: type, where: str, base_dir: Path) -> Any:
         path = Path(value).expanduser()
         # Relative paths are relative to the config file
         return (base_dir / path).resolve()
+
+    if typ == tuple[str, ...]:
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise bad("a list of strings")
+        return tuple(value)
 
     raise TypeError(f"Unsupported config type {typ!r}")  # programming error
 
@@ -261,6 +272,7 @@ def _validate(cfg: Config):
         ("downloads.offer_timeout", dl.offer_timeout),
         ("downloads.connect_timeout", dl.connect_timeout),
         ("downloads.stall_timeout", dl.stall_timeout),
+        ("downloads.on_complete_timeout", dl.on_complete_timeout),
     ]:
         if not value > 0:
             errors.append(f"{name}: must be greater than 0, got {value}")
@@ -275,6 +287,8 @@ def _validate(cfg: Config):
     for name, path in [("downloads.dir", dl.dir), ("downloads.searches_dir", dl.searches_dir)]:
         if path.exists() and not path.is_dir():
             errors.append(f"{name}: {path} exists and is not a directory")
+    if dl.on_complete and not dl.on_complete[0].strip():
+        errors.append("downloads.on_complete: the first item must be the command to run")
     if dl.dir == dl.searches_dir:
         errors.append(f"downloads.searches_dir: must differ from downloads.dir ({dl.dir})")
 
