@@ -94,10 +94,19 @@ class LogConfig:
 
 
 @dataclass(frozen=True)
+class TuiConfig:
+    # A Textual theme. "ansi-dark" uses the terminal's own colours, so the
+    # TUI follows the terminal's theme. The TUI checks the name: this module
+    # doesn't import Textual, since the headless agent loads it too.
+    theme: str = "ansi-dark"
+
+
+@dataclass(frozen=True)
 class Config:
     irc: IrcConfig = field(default_factory=IrcConfig)
     downloads: DownloadsConfig = field(default_factory=DownloadsConfig)
     log: LogConfig = field(default_factory=LogConfig)
+    tui: TuiConfig = field(default_factory=TuiConfig)
 
 
 # --- loading ----------------------------------------------------------------

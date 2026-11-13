@@ -40,6 +40,7 @@ from server.unix_socket import SocketUnavailableError, unix_socket
 
 from .library import PastSearch, list_searches, load_search
 from .log import LogHandler, LogView
+from .styles import Styles
 
 # --- keys -------------------------------------------------------------------
 #
@@ -116,7 +117,7 @@ class ConfirmPrompt(Static, can_focus=True):
     asking = False
 
     def ask(self, question: str):
-        self.update(Text.assemble(question, " ", ("[y/n]", "bold")))
+        self.update(Text.assemble(question, " ", ("[y/n]", self.app.text_styles.strong)))
         self.asking = True
         self.display = True
         self.focus()
@@ -335,29 +336,30 @@ def book_progress(r: Request) -> str:
             return "cancelled"
 
 
-def _book_label(r: Request) -> Text:
-    # Only the marker is red: red text is unreadable on the highlight
+def _book_label(r: Request, st: Styles) -> Text:
+    # Only the marker shows the failure: coloured text is unreadable on the highlight
     bad = r.state is RequestState.FAILED or r.hook is HookState.FAILED
     return Text.assemble(
-        (book_marker(r), "bold red" if bad else ""), " ", (book_title(r), "bold"), "\n",
-        (book_progress(r), "dim"),
+        (book_marker(r), st.failed + st.strong if bad else ""), " ", (book_title(r), st.strong),
+        "\n", (book_progress(r), st.muted),
     )
 
 
-def _heading(name: str) -> Text:
-    return Text(name.upper(), style="bold dim")
+def _heading(name: str, st: Styles) -> Text:
+    return Text(name.upper(), style=st.heading)
 
 
-def _entry_label(entry: Entry) -> Text:
+def _entry_label(entry: Entry, st: Styles) -> Text:
     if _is_book(entry):
-        return _book_label(entry)
+        return _book_label(entry, st)
     if isinstance(entry, Request):
-        style = "red" if entry.state is RequestState.FAILED else "dim"
-        return Text.assemble((search_query(entry), "bold"), "\n", (search_progress(entry), style))
+        style = st.failed if entry.state is RequestState.FAILED else st.muted
+        return Text.assemble((search_query(entry), st.strong), "\n",
+                             (search_progress(entry), style))
     count = len(entry.results.items)
     return Text.assemble(
-        (entry.query, "bold"), "\n",
-        (f"{entry.when:%b %d %H:%M} · {count} result{'' if count == 1 else 's'}", "dim"),
+        (entry.query, st.strong), "\n",
+        (f"{entry.when:%b %d %H:%M} · {count} result{'' if count == 1 else 's'}", st.muted),
     )
 
 
@@ -365,7 +367,7 @@ def _entry_label(entry: Entry) -> Text:
 MAX_REPLIES = 50
 
 
-def book_details(r: Request, replies) -> Group:
+def book_details(r: Request, replies, st: Styles) -> Group:
     """The book pane: the request, how it went, and what the bot said."""
     created = datetime.fromtimestamp(r.created_at)
     match r.state:
@@ -397,19 +399,19 @@ def book_details(r: Request, replies) -> Group:
                 rows += [("hook", f"failed: {r.hook_error}"), ("still at", str(r.path))]
     # Two columns, so a long value wraps within its own
     grid = Table.grid(padding=(0, 2))
-    grid.add_column(style="dim", no_wrap=True)
+    grid.add_column(style=st.muted, no_wrap=True)
     grid.add_column()
     for label, value in rows:
         failed = label in ("state", "hook") and value.startswith("failed")
-        grid.add_row(label, Text(value, style="red" if failed else ""))
+        grid.add_row(label, Text(value, style=st.failed if failed else ""))
     parts = [grid]
     if replies:
         said = Table.grid(padding=(0, 2))
-        said.add_column(style="dim", no_wrap=True)
+        said.add_column(style=st.muted, no_wrap=True)
         said.add_column()
         for when, nick, message in replies:
             said.add_row(f"{datetime.fromtimestamp(when):%H:%M:%S}", f"{nick}: {message}")
-        parts += [Text("\nfrom the bot", style="bold dim"), said]
+        parts += [Text("\nfrom the bot", style=st.heading), said]
     return Group(*parts)
 
 
@@ -417,66 +419,18 @@ class EbooksApp(App):
     TITLE = "ebooks"
     BINDINGS = APP_KEYS
     ENABLE_COMMAND_PALETTE = False
-    CSS = """
-    Horizontal {
-        height: 1fr;
-    }
-    LogView {
-        height: 1fr;
-        border: round $accent;
-        padding: 0 1;
-    }
-    SearchList, ResultsTable {
-        height: 100%;
-    }
-    SearchList {
-        width: 34;
-        border: round $panel;
-        /* One line per line of an entry: a long title is cut off, not wrapped */
-        text-wrap: nowrap;
-        text-overflow: ellipsis;
-    }
-    ResultsTable {
-        width: 1fr;
-        border: round $panel;
-    }
-    BookDetails {
-        width: 1fr;
-        height: 100%;
-        border: round $panel;
-        padding: 0 1;
-    }
-    SearchList:focus, ResultsTable:focus {
-        border: round $accent;
-    }
-    #prompt {
-        height: 1;
-        padding: 0 1;
-    }
-    #prompt Label {
-        color: $text-muted;
-    }
-    SearchInput, SearchInput:focus {
-        border: none;
-        height: 1;
-        padding: 0 1;
-        width: 1fr;
-    }
-    ConfirmPrompt {
-        height: 1;
-        padding: 0 1;
-        background: $warning-muted;
-    }
-    #status {
-        height: 1;
-        padding: 0 1;
-        background: $panel;
-    }
-    """
+    # Next to this file; `textual run --dev ebooks_tui.py` reloads it as you edit
+    CSS_PATH = "app.tcss"
 
-    def __init__(self, agent: AgentService, searches_dir: Path, socket_path: Path | None = None):
-        """`socket_path`: serve the Unix socket there too (None: don't)."""
+    def __init__(self, agent: AgentService, searches_dir: Path, socket_path: Path | None = None,
+                 theme: str = "ansi-dark"):
+        """`socket_path`: serve the Unix socket there too (None: don't).
+        `theme`: a Textual theme's name ([tui] theme in the config)."""
         super().__init__()
+        self.theme = theme
+        # How text built in code looks, for this theme (see styles.py). Set
+        # once: the theme can't be changed while the app runs.
+        self.text_styles = Styles.for_theme(self.current_theme)
         self.agent = agent
         self.searches_dir = searches_dir
         self.socket_path = socket_path
@@ -539,7 +493,7 @@ class EbooksApp(App):
         log_view.display = False
         log_view.border_title = "log"
         # First, so the log has the agent's start too
-        self._log_handler = LogHandler(self._log_line, asyncio.get_running_loop())
+        self._log_handler = LogHandler(self._log_line, asyncio.get_running_loop(), self.text_styles)
         self._log_handler.attach()
 
         self.searches = list_searches(self.searches_dir)
@@ -684,12 +638,13 @@ class EbooksApp(App):
         books = sorted(self._books.values(), key=lambda r: r.created_at, reverse=True)
         searches = sorted([*self.searches, *self._live.values()], key=_entry_time, reverse=True)
         self._entries = {_entry_id(e): e for e in [*books, *searches]}
-        options = [Option(_entry_label(e), id=_entry_id(e)) for e in searches]
+        st = self.text_styles
+        options = [Option(_entry_label(e, st), id=_entry_id(e)) for e in searches]
         if books:
             options = [
-                Option(_heading("books"), id=BOOKS_HEADING, disabled=True),
-                *(Option(_entry_label(b), id=_entry_id(b)) for b in books),
-                Option(_heading("searches"), id=SEARCHES_HEADING, disabled=True),
+                Option(_heading("books", st), id=BOOKS_HEADING, disabled=True),
+                *(Option(_entry_label(b, st), id=_entry_id(b)) for b in books),
+                Option(_heading("searches", st), id=SEARCHES_HEADING, disabled=True),
                 *options,
             ]
         # With only searches, the border says what they are
@@ -748,7 +703,7 @@ class EbooksApp(App):
             self._rebuild_sidebar()
             return
         self._entries[_entry_id(r)] = r
-        self.query_one(SearchList).replace_option_prompt(_entry_id(r), _entry_label(r))
+        self.query_one(SearchList).replace_option_prompt(_entry_id(r), _entry_label(r, self.text_styles))
         if isinstance(self.shown, Request) and self.shown.id == r.id:
             self.show(r)
 
@@ -925,7 +880,7 @@ class EbooksApp(App):
             label = f"── other formats ({len(others)}) "
             title = label + "─" * max(0, widths["title"] - len(label))
             cells = ["─" * widths[k] for k in ("state", "type", "size")] + [title]
-            table.add_row(*(Text(c, style="dim") for c in cells), key=DIVIDER)
+            table.add_row(*(Text(c, style=self.text_styles.muted) for c in cells), key=DIVIDER)
         for item in others:
             self._add_row(table, item)
         table.border_title = f"results: {search.query}"
@@ -970,7 +925,7 @@ class EbooksApp(App):
         details.display = True
         details.border_title = f"book: {book_title(r)}"
         details.border_subtitle = book_progress(r)
-        details.update(book_details(r, self._replies.get(r.id, ())))
+        details.update(book_details(r, self._replies.get(r.id, ()), self.text_styles))
 
     def _show_nothing(self):
         """No searches at all, e.g. the last one was just deleted."""
@@ -989,7 +944,7 @@ class EbooksApp(App):
     def _item_cells(self, item: ResultItem) -> tuple[Text, ...]:
         """A row's type, size and title cells: dimmed if the bot is offline.
         (The state column isn't: it's about our request, not the bot.)"""
-        style = "dim" if self._is_offline(item.bot) else ""
+        style = self.text_styles.muted if self._is_offline(item.bot) else ""
         return (
             Text(item.ext or "", style=style),
             Text(human_size(item.size_bytes), style=style, justify="right"),

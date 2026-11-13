@@ -104,7 +104,9 @@ Every book requested this session, from the TUI or over the socket, is listed un
 
 `Tab` switches to the log, full screen, and back: everything that goes to `agent.log`, as it happens (what was sent, what bots said to you, DCC offers including refused ones, the hook's output). `j`/`k`, `gg`/`G`; it follows new lines while you're at the bottom. It only has this session: earlier ones are in `agent.log`.
 
-`q` quits, and asks first if a request is still in progress or a book is still being moved. Quitting waits for a running hook to finish, rather than killing it partway.
+`q` quits, and asks first if a request is still in progress or a book is still being moved.
+
+The colours come from a theme: `[tui] theme` in `config.toml`. The default, `ansi-dark`, uses your terminal's own colours, so the TUI follows your terminal's theme; `config.example.toml` lists the others (`tokyo-night`, `gruvbox`, `catppuccin-mocha`...). The widgets are styled in `tui/app.tcss`, and the colours of text inside them by meaning (failed, warning, muted...) in `tui/styles.py`. Quitting waits for a running hook to finish, rather than killing it partway.
 
 The TUI serves the Unix socket too, so socket clients keep working while it's open (their requests show up in the TUI). It can't run beside `ebooks_agent.py`. What's next: see [`docs/tui-plan.md`](docs/tui-plan.md).
 

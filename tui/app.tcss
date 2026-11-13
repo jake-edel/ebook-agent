@@ -1,0 +1,58 @@
+/* The TUI's widgets: layout, borders, backgrounds. Colours are the theme's
+   variables ($accent, $panel...), so they follow the theme ([tui] theme in
+   the config). Text inside the widgets gets its colours from styles.py. */
+
+Horizontal {
+    height: 1fr;
+}
+LogView {
+    height: 1fr;
+    border: round $accent;
+    padding: 0 1;
+}
+SearchList, ResultsTable {
+    height: 100%;
+}
+SearchList {
+    width: 34;
+    border: round $panel;
+    /* One line per line of an entry: a long title is cut off, not wrapped */
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+ResultsTable {
+    width: 1fr;
+    border: round $panel;
+}
+BookDetails {
+    width: 1fr;
+    height: 100%;
+    border: round $panel;
+    padding: 0 1;
+}
+SearchList:focus, ResultsTable:focus {
+    border: round $accent;
+}
+#prompt {
+    height: 1;
+    padding: 0 1;
+}
+#prompt Label {
+    color: $text-muted;
+}
+SearchInput, SearchInput:focus {
+    border: none;
+    height: 1;
+    padding: 0 1;
+    width: 1fr;
+}
+ConfirmPrompt {
+    height: 1;
+    padding: 0 1;
+    background: $warning-muted;
+}
+#status {
+    height: 1;
+    padding: 0 1;
+    background: $panel;
+}

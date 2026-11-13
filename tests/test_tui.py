@@ -27,6 +27,8 @@ from core import (
     RequestUpdated,
     StatusChanged,
 )
+from textual.theme import BUILTIN_THEMES
+
 from tui.app import (
     DIVIDER,
     BookDetails,
@@ -42,6 +44,7 @@ from tui.app import (
 )
 from tui.library import list_searches
 from tui.log import LogView, record_parts
+from tui.styles import Styles
 
 S = RequestState
 
@@ -225,7 +228,7 @@ def dimmed_bots(app):
     table = app.query_one(ResultsTable)
     keys = [r.key for r in table.ordered_rows if r.key.value != DIVIDER]
     return [app._rows[k.value].bot for k in keys
-            if all(c.style == "dim" for c in table.get_row(k)[1:])]
+            if all(c.style == app.text_styles.muted for c in table.get_row(k)[1:])]
 
 
 def has_divider(app):
@@ -1343,16 +1346,63 @@ def test_the_log_shows_what_the_log_file_gets(two_searches):
 
 
 def test_levels_are_coloured():
+    st = Styles.for_theme(BUILTIN_THEMES["ansi-dark"])
+
     def record(level):
         return logging.LogRecord("x", level, __file__, 1, "msg", None, None)
 
     def styles(level):
-        _, level_text, message = record_parts(record(level))
-        return str(level_text.style), str(message.style)
+        _, level_text, message = record_parts(record(level), st)
+        return level_text.style, message.style
 
-    assert styles(logging.WARNING) == ("yellow", "yellow")
-    assert styles(logging.ERROR) == ("red", "red")
-    assert styles(logging.INFO) == ("dim", "")
+    assert styles(logging.WARNING) == (st.warning, st.warning)
+    assert styles(logging.ERROR) == (st.failed, st.failed)
+    assert styles(logging.INFO) == (st.muted, "")
+
+
+# --- theming ----------------------------------------------------------------------
+
+@pytest.mark.parametrize("theme, failed, warning", [
+    # The terminal's own red and yellow: follows the terminal's theme
+    ("ansi-dark", "color(1)", "color(3)"),
+    # The theme's colours for text, not its background ones
+    ("tokyo-night", "#f9a4b4", "#eaca9b"),
+])
+def test_roles_follow_the_theme(theme, failed, warning):
+    st = Styles.for_theme(BUILTIN_THEMES[theme])
+    assert (str(st.failed), str(st.warning)) == (failed, warning)
+    assert (str(st.muted), str(st.strong), str(st.heading)) == ("dim", "bold", "bold dim")
+
+
+def test_the_app_uses_the_theme_its_given(two_searches):
+    async def go():
+        app = EbooksApp(FakeAgent(), two_searches, theme="tokyo-night")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            return app.theme, str(app.text_styles.failed)
+
+    assert asyncio.run(go()) == ("tokyo-night", "#f9a4b4")
+
+
+def test_ansi_dark_by_default(two_searches):
+    async def steps(app, pilot):
+        return app.theme
+
+    assert run_app(two_searches, steps) == "ansi-dark"
+
+
+def test_a_failed_book_marker_uses_the_failed_style(two_searches):
+    agent = FakeAgent()
+
+    async def steps(app, pilot):
+        book(agent, state=S.FAILED, error="No DCC offer")
+        await pilot.pause()
+        prompt = app.query_one(SearchList).get_option_at_index(1).prompt
+        return [(prompt.plain[s.start:s.end], s.style) for s in prompt.spans], app.text_styles
+
+    spans, st = run_app(two_searches, steps, agent=agent)
+    assert ("✗", st.failed + st.strong) in spans
+    assert ("No DCC offer", st.muted) in spans  # not the failed colour: unreadable on the highlight
 
 
 def test_records_from_other_threads_arrive(two_searches):
@@ -1453,3 +1503,11 @@ def test_the_handler_goes_when_the_app_does(two_searches):
     during = run_app(two_searches, steps)
     assert during == logging.INFO
     assert root.level == level and root.handlers == handlers
+
+
+def test_an_unknown_theme_is_a_config_error():
+    import ebooks_tui
+    from config import ConfigError
+    ebooks_tui.check_theme("gruvbox")  # fine
+    with pytest.raises(ConfigError, match=r"tui.theme: unknown theme 'gruvbx' \(one of: .*gruvbox"):
+        ebooks_tui.check_theme("gruvbx")

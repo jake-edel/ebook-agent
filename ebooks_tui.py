@@ -9,6 +9,8 @@ import logging
 import sys
 from pathlib import Path
 
+from textual.theme import BUILTIN_THEMES
+
 from server.agent import EbooksAgent
 from config import ConfigError, config_file, load_config
 from server.logfile import LogFile, LogFileError
@@ -30,6 +32,7 @@ def main(argv=None):
 
     try:
         config = load_config(args.config)
+        check_theme(config.tui.theme)
     except ConfigError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(2)
@@ -46,7 +49,16 @@ def main(argv=None):
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
     with log_file:
-        EbooksApp(EbooksAgent(config), config.downloads.searches_dir, socket_path).run()
+        EbooksApp(EbooksAgent(config), config.downloads.searches_dir, socket_path,
+                  theme=config.tui.theme).run()
+
+
+def check_theme(name: str):
+    """Raise ConfigError unless `name` is one of Textual's themes. Here, not in
+    config.py, which the headless agent loads without Textual."""
+    if name not in BUILTIN_THEMES:
+        raise ConfigError(f"tui.theme: unknown theme {name!r} "
+                          f"(one of: {', '.join(sorted(BUILTIN_THEMES))})")
 
 
 if __name__ == "__main__":

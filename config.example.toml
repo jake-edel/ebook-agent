@@ -73,3 +73,12 @@ file = "agent.log"
 max_size_mib = 5
 # ...keeping this many old ones as agent.log.1 (newest) to .3 (1-20)
 backups = 3
+
+[tui]
+# The colour theme. "ansi-dark" (or "ansi-light") uses your terminal's own
+# colours, so the TUI follows your terminal's theme. Or one of Textual's:
+# textual-dark, textual-light, tokyo-night, gruvbox, nord, dracula, monokai,
+# flexoki, solarized-dark, solarized-light, rose-pine, rose-pine-moon,
+# rose-pine-dawn, catppuccin-mocha, catppuccin-macchiato, catppuccin-frappe,
+# catppuccin-latte, atom-one-dark, atom-one-light
+theme = "ansi-dark"

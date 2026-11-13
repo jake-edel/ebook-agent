@@ -17,15 +17,16 @@ from rich.text import Text
 from textual.binding import Binding
 from textual.widgets import RichLog
 
+from .styles import Styles
+
 # As in the log file
 _LEVELS = {"WARNING": "WARN", "CRITICAL": "CRIT"}
-_STYLES = {"WARN": "yellow", "ERROR": "red", "CRIT": "bold red"}
 
 # This session only; earlier ones are in the file
 MAX_LINES = 2000
 
 
-def record_parts(record: logging.LogRecord) -> tuple[Text, Text, Text]:
+def record_parts(record: logging.LogRecord, st: Styles) -> tuple[Text, Text, Text]:
     """An entry's time, level and message (with any traceback), styled."""
     level = _LEVELS.get(record.levelname, record.levelname)
     text = record.getMessage()
@@ -34,11 +35,12 @@ def record_parts(record: logging.LogRecord) -> tuple[Text, Text, Text]:
     elif record.exc_text:
         text += "\n" + record.exc_text
     stamp = time.strftime("%H:%M:%S", time.localtime(record.created))
-    return (Text(stamp, style="dim"), Text(level, style=_STYLES.get(level, "dim")),
-            Text(text, style=_STYLES.get(level, "")))
+    style = {"WARN": st.warning, "ERROR": st.failed, "CRIT": st.failed + st.strong}.get(level)
+    return (Text(stamp, style=st.muted), Text(level, style=style or st.muted),
+            Text(text, style=style or ""))
 
 
-def format_record(record: logging.LogRecord) -> Table:
+def format_record(record: logging.LogRecord, st: Styles) -> Table:
     """One entry: "20:14:03 WARN  message". The message has a column of its
     own, so its continuation lines (hook output, tracebacks) and a long line
     wrapping line up under it, and each entry starts with its time."""
@@ -46,7 +48,7 @@ def format_record(record: logging.LogRecord) -> Table:
     grid.add_column(no_wrap=True)
     grid.add_column(no_wrap=True, min_width=5)
     grid.add_column(ratio=1, overflow="fold")
-    grid.add_row(*record_parts(record))
+    grid.add_row(*record_parts(record, st))
     return grid
 
 
@@ -57,10 +59,12 @@ class LogHandler(logging.Handler):
     widgets go: after that, records are dropped.
     """
 
-    def __init__(self, deliver: Callable[[Table], None], loop: asyncio.AbstractEventLoop):
+    def __init__(self, deliver: Callable[[Table], None], loop: asyncio.AbstractEventLoop,
+                 styles: Styles):
         super().__init__(level=logging.INFO)
         self._deliver = deliver
         self._loop = loop
+        self._styles = styles
         self._root_level: int | None = None
 
     def attach(self):
@@ -81,7 +85,7 @@ class LogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord):
         try:
-            line = format_record(record)
+            line = format_record(record, self._styles)
             self._loop.call_soon_threadsafe(self._deliver, line)
         except RuntimeError:
             pass  # the loop has closed: nobody left to show it to
