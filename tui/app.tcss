@@ -33,14 +33,14 @@ BookDetails {
 SearchList:focus, ResultsTable:focus {
     border: round $accent;
 }
-#prompt {
+#prompt, #filter {
     height: 1;
     padding: 0 1;
 }
-#prompt Label {
+#prompt Label, #filter Label {
     color: $text-muted;
 }
-SearchInput, SearchInput:focus {
+SearchInput, SearchInput:focus, FilterInput, FilterInput:focus {
     border: none;
     height: 1;
     padding: 0 1;

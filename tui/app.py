@@ -17,6 +17,7 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
+from textual.content import Content
 from textual.message import Message
 from textual.widgets import DataTable, Footer, Input, Label, OptionList, Static
 from textual.widgets.option_list import Option
@@ -38,6 +39,7 @@ from core import (
 from results import ResultItem, parse_line
 from server.unix_socket import SocketUnavailableError, unix_socket
 
+from .jump import JUMP_KEYS, JumpKeys
 from .library import PastSearch, list_searches, load_search
 from .log import LogHandler, LogView
 from .styles import Styles, css_variables
@@ -50,6 +52,9 @@ from .styles import Styles, css_variables
 _MOVE = [
     Binding("j", "cursor_down", "Down", show=False),
     Binding("k", "cursor_up", "Up", show=False),
+    *JUMP_KEYS,
+    # Narrows the results shown, as you type (from the sidebar too)
+    Binding("slash", "app.open_filter", "Filter"),
 ]
 SEARCH_KEYS = _MOVE + [
     Binding("l,right", "select", "Open", show=False),  # as Enter
@@ -58,7 +63,9 @@ SEARCH_KEYS = _MOVE + [
     Binding("d", "app.delete_entry", "Delete", show=False),
 ]
 RESULT_KEYS = _MOVE + [
-    Binding("h,left,escape", "app.focus_searches", "Back"),
+    Binding("h,left", "app.focus_searches", "Back"),
+    # Clears the filter if there is one, else as h
+    Binding("escape", "app.results_escape", "Back", show=False),
 ]
 # The log, full screen, and back (see LogView for its own keys). On the
 # panes rather than the app: Tab otherwise moves the focus (h/l do that here).
@@ -66,6 +73,9 @@ for keys in (SEARCH_KEYS, RESULT_KEYS):
     keys.append(Binding("tab", "app.toggle_log", "Log"))
 INPUT_KEYS = [
     Binding("escape", "app.close_search_input", "Cancel"),
+]
+FILTER_KEYS = [
+    Binding("escape", "app.cancel_filter", "Clear filter"),
 ]
 APP_KEYS = [
     Binding("s", "open_search_input", "Search"),
@@ -80,7 +90,7 @@ PREVIEW_DELAY = 0.15
 
 # --- widgets ----------------------------------------------------------------
 
-class SearchList(OptionList):
+class SearchList(JumpKeys, OptionList):
     """The sidebar. The highlighted entry is drawn plain, in the highlight's
     own colours: its dim and coloured text (times, a failed book's marker)
     would be unreadable on it, in every theme (the main pane next to it
@@ -130,10 +140,33 @@ class SearchList(OptionList):
             return True
         return any(not self.get_option_at_index(i).disabled for i in indexes)
 
+    # The first and last entries that aren't headings
+    def jump_to_top(self):
+        self.action_first()
+
+    def jump_to_bottom(self):
+        self.action_last()
+
 
 class SearchInput(Input):
     """The one-line search prompt. Printable keys are typed, not bindings."""
     BINDINGS = INPUT_KEYS
+
+
+class FilterInput(Input):
+    """The `/` prompt: narrows the results as you type."""
+    BINDINGS = FILTER_KEYS
+
+
+def filter_matches(item: ResultItem, query: str) -> bool:
+    """Whether a result is kept by the filter `query`: every word of it is in
+    the request line (bot and file name) or the file type. As Vim's
+    smartcase: case only matters if the query has a capital letter."""
+    words = query.split()
+    haystack = f"{item.request} {item.ext or ''}"
+    if query == query.lower():
+        haystack = haystack.lower()
+    return all(w in haystack for w in words)
 
 
 class ConfirmPrompt(Static, can_focus=True):
@@ -177,7 +210,7 @@ class BookDetails(Static):
 DIVIDER = "divider"
 
 
-class ResultsTable(DataTable):
+class ResultsTable(JumpKeys, DataTable):
     BINDINGS = RESULT_KEYS
     # Where the divider is, if there is one; moving up or down steps over it
     divider_row: int | None = None
@@ -191,6 +224,19 @@ class ResultsTable(DataTable):
         super().action_cursor_up()
         if self.cursor_row == self.divider_row:
             super().action_cursor_up()
+
+    # The divider is never first or last: it's between two groups
+    def jump_to_top(self):
+        self.action_scroll_top()
+
+    def jump_to_bottom(self):
+        self.action_scroll_bottom()
+
+
+def plain(text: str) -> Content:
+    """For a border title: as it is. A str would be read as markup, and a
+    query, a title or a filter can have [brackets] in it."""
+    return Content(text)
 
 
 def human_size(n: int | None) -> str:
@@ -486,6 +532,11 @@ class EbooksApp(App):
         self._online: frozenset[str] | None = None
         self._preview = None  # Timer for a pending preview
         self._focus_before_search = None  # to go back to when the prompt closes
+        self._focus_before_filter = None  # and when the filter's is cancelled
+        # The filter on the results shown ("": none), and the column widths
+        # of the search shown, from all its rows (so they stay put as it narrows)
+        self._filter = ""
+        self._widths: dict[str, int] = {}
         self._focus_before_log = None  # and when the log closes
         self._log_handler: LogHandler | None = None
         self._deleting: PastSearch | None = None  # waiting for its y/n
@@ -509,6 +560,9 @@ class EbooksApp(App):
         with Horizontal(id="prompt"):
             yield Label("@search")
             yield SearchInput(placeholder="title or author, Enter to search, Esc to cancel")
+        with Horizontal(id="filter"):
+            yield Label("/")
+            yield FilterInput(placeholder="narrow the results, Enter to keep, Esc to clear")
         yield ConfirmPrompt()
         yield Static(id="status")
         yield Footer()
@@ -519,6 +573,7 @@ class EbooksApp(App):
         self.query_one(ResultsTable).border_title = "results"
 
         self.query_one("#prompt").display = False
+        self.query_one("#filter").display = False
         self.query_one(ConfirmPrompt).display = False
         self.query_one(BookDetails).display = False
         log_view = self.query_one(LogView)
@@ -857,6 +912,7 @@ class EbooksApp(App):
     def action_open_search_input(self):
         prompt = self.query_one("#prompt")
         search_input = self.query_one(SearchInput)
+        self.query_one("#filter").display = False  # one prompt at a time; the filter stays
         if not prompt.display:
             self._focus_before_search = self.focused
             search_input.value = ""
@@ -869,12 +925,60 @@ class EbooksApp(App):
         (before if before and before.is_attached else self.query_one(SearchList)).focus()
 
     def on_input_submitted(self, event: Input.Submitted):
+        if isinstance(event.input, FilterInput):
+            self._keep_filter()
+            return
         try:
             self.agent.search(event.value)  # its events add it to the sidebar
         except ValueError as e:
             self.note(str(e))  # the prompt stays open, to fix the query
             return
         self.action_close_search_input()
+
+    # --- filter ---------------------------------------------------------
+
+    def action_open_filter(self):
+        """The `/` prompt, with the current filter in it to change."""
+        if not isinstance(self.shown, PastSearch):
+            self.note("nothing to filter: open a search's results first")
+            return
+        self.query_one("#prompt").display = False  # one prompt at a time
+        bar, box = self.query_one("#filter"), self.query_one(FilterInput)
+        if not bar.display:
+            self._focus_before_filter = self.focused
+            with self.prevent(Input.Changed):
+                box.value = self._filter
+            box.cursor_position = len(box.value)
+            bar.display = True
+        box.focus()
+
+    def on_input_changed(self, event: Input.Changed):
+        if isinstance(event.input, FilterInput) and event.value != self._filter:
+            self._set_filter(event.value)
+
+    def _keep_filter(self):
+        """Enter: close the prompt, keep the filter, and go to the results."""
+        self.query_one("#filter").display = False
+        self.query_one(ResultsTable).focus()
+
+    def action_cancel_filter(self):
+        """Esc in the prompt: clear the filter, and back to where you were."""
+        self.query_one("#filter").display = False
+        self._set_filter("")
+        before = self._focus_before_filter
+        (before if before and before.is_attached and before.display
+         else self.query_one(ResultsTable)).focus()
+
+    def action_results_escape(self):
+        if self._filter:
+            self._set_filter("")
+        else:
+            self.action_focus_searches()
+
+    def _set_filter(self, query: str):
+        self._filter = query
+        if isinstance(self.shown, PastSearch):
+            self._fill_results(self.shown)
 
     # --- results pane ---------------------------------------------------
 
@@ -892,9 +996,6 @@ class EbooksApp(App):
         # automatic widths don't follow a table that's been refilled
         table = self._clear_results(search)
         items = search.results.items
-        # Epubs first, then everything else, each in the order the bot sent
-        epubs = [i for i in items if i.ext == "epub"]
-        others = [i for i in items if i.ext != "epub"]
 
         def width(header, values):
             return max([len(header), *(len(v) for v in values)])
@@ -902,7 +1003,7 @@ class EbooksApp(App):
         # Title last, so a long one is what gets cut off, not the size. No
         # bot column: which bot only matters if it's offline, and those rows
         # are dimmed (and named in the subtitle).
-        widths = {
+        self._widths = widths = {
             "state": 4,
             "type": width("type", (i.ext or "" for i in items)),
             "size": 4,
@@ -912,23 +1013,51 @@ class EbooksApp(App):
         table.add_column("type", key="type", width=widths["type"])
         table.add_column(Text("size", justify="right"), key="size", width=widths["size"])
         table.add_column("title", key="title", width=widths["title"])
+        self._fill_results(search)
+
+    def _fill_results(self, search: PastSearch):
+        """The rows of `search` that the filter keeps, keeping the cursor on
+        the same row if it's still there."""
+        table = self.query_one(ResultsTable)
+        current = None
+        if table.row_count:
+            current = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
+        table.clear()
+        self._rows = {}
+        self._row_for_line = {}
+        self._rows_for_bot = {}
+        table.divider_row = None
+        items = [i for i in search.results.items if filter_matches(i, self._filter)]
+        # Epubs first, then everything else, each in the order the bot sent
+        epubs = [i for i in items if i.ext == "epub"]
+        others = [i for i in items if i.ext != "epub"]
         for item in epubs:
             self._add_row(table, item)
         if epubs and others:
             # Only worth marking where the epubs end if there are any
             table.divider_row = table.row_count
+            widths = self._widths
             label = f"── other formats ({len(others)}) "
             title = label + "─" * max(0, widths["title"] - len(label))
             cells = ["─" * widths[k] for k in ("state", "type", "size")] + [title]
             table.add_row(*(Text(c, style=self.text_styles.muted) for c in cells), key=DIVIDER)
         for item in others:
             self._add_row(table, item)
-        table.border_title = f"results: {search.query}"
+        if current in self._rows:
+            table.move_cursor(row=table.get_row_index(current), animate=False)
+        else:
+            table.move_cursor(row=0, animate=False)
+        table.border_title = plain(f"results: {search.query}" + (
+            f" [/{self._filter}]" if self._filter else ""))
         table.border_subtitle = self._subtitle(search)
 
-    def _subtitle(self, search: PastSearch) -> str:
+    def _subtitle(self, search: PastSearch) -> Content:
         r = search.results
-        parts = [f"{len(r.items)} results"]
+        shown = len(self._rows)
+        if self._filter:
+            parts = ["no matches" if not shown else f"{shown} of {len(r.items)} results"]
+        else:
+            parts = [f"{len(r.items)} results"]
         if r.lists_searched is not None:
             parts.append(f"{r.lists_searched} lists")
         if r.unparsed:
@@ -936,11 +1065,17 @@ class EbooksApp(App):
         bots = dict.fromkeys(i.bot for i in r.items)  # in the order they appear
         if offline := [b for b in bots if self._is_offline(b)]:
             parts.append(offline_summary(offline))
-        return " · ".join(parts)
+        return plain(" · ".join(parts))
 
     def _clear_results(self, shown: Entry | None) -> ResultsTable:
-        """Empty the results pane, columns too, for `shown`, and show it."""
+        """Empty the results pane, columns too, for `shown`, and show it.
+        A filter was for what was shown before: it goes too."""
         self.shown = shown
+        self._filter = ""
+        if (bar := self.query_one("#filter")).display:
+            # e.g. a search arrived and opened while you were typing
+            bar.display = False
+            self.query_one(ResultsTable).focus()
         table = self.query_one(ResultsTable)
         table.display = True
         self.query_one(BookDetails).display = False
@@ -954,8 +1089,9 @@ class EbooksApp(App):
     def _show_live(self, r: Request):
         """A search with no results file: just how it's doing."""
         table = self._clear_results(r)
-        table.border_title = f"results: {search_query(r)}"
-        table.border_subtitle = r.error if r.state is RequestState.FAILED else search_progress(r)
+        table.border_title = plain(f"results: {search_query(r)}")
+        table.border_subtitle = plain(
+            r.error if r.state is RequestState.FAILED else search_progress(r))
 
     def _show_book(self, r: Request):
         """A book: how its request went, in place of the results table."""
@@ -963,8 +1099,8 @@ class EbooksApp(App):
         self.query_one(ResultsTable).display = False
         details = self.query_one(BookDetails)
         details.display = True
-        details.border_title = f"book: {book_title(r)}"
-        details.border_subtitle = book_progress(r)
+        details.border_title = plain(f"book: {book_title(r)}")
+        details.border_subtitle = plain(book_progress(r))
         details.update(book_details(r, self._replies.get(r.id, ()), self.text_styles))
 
     def _show_nothing(self):

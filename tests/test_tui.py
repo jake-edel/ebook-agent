@@ -27,6 +27,7 @@ from core import (
     RequestUpdated,
     StatusChanged,
 )
+from textual.content import Content
 from textual.theme import BUILTIN_THEMES
 
 from tui.app import (
@@ -35,6 +36,7 @@ from tui.app import (
     ConfirmPrompt,
     PREVIEW_DELAY,
     EbooksApp,
+    FilterInput,
     ResultsTable,
     SearchInput,
     SearchList,
@@ -366,6 +368,171 @@ def test_cursor_steps_over_the_divider(two_searches):
         return seen
 
     assert run_app(two_searches, steps) == [2, 2, 0, 0]
+
+
+# --- filter and jumps -----------------------------------------------------------
+
+def shown_text(border_title: str) -> str:
+    """A border title as it reads: Textual hands it back as markup."""
+    return Content.from_markup(border_title).plain
+
+
+def titles(app):
+    return [r[3] for r in rows(app)]
+
+
+async def open_warhammer(pilot):
+    await pilot.press("j")
+    await settle(pilot)
+    await pilot.press("enter")
+
+
+def test_slash_narrows_the_results_as_you_type(two_searches):
+    async def steps(app, pilot):
+        await open_warhammer(pilot)
+        await pilot.press("slash")
+        prompt_focused = isinstance(app.focused, FilterInput)
+        await pilot.press(*"sword")
+        typed = titles(app), has_divider(app)
+        table = app.query_one(ResultsTable)
+        return prompt_focused, typed, shown_text(table.border_title), shown_text(table.border_subtitle)
+
+    prompt_focused, (shown, divider), title, subtitle = run_app(two_searches, steps)
+    assert prompt_focused
+    assert shown == ["Warhammer - [Heroes 03] - Sword of Vengeance - Chris Wraight (v1.0)",
+                     "Warhammer - [Heroes 03] - Sword of Vengeance - Chris Wraight (v1.0) (mobi)"]
+    assert divider  # one epub, one mobi
+    assert title == "results: warhammer [/sword]"
+    assert subtitle.startswith("2 of 10 results")
+
+
+@pytest.mark.parametrize("query, expected", [
+    ("mobi", 3),  # the file type
+    ("abnett epub", 2),  # every word, anywhere
+    ("artemis", 2),  # the bot
+    ("pdf", 2),  # a type given only in the details
+    ("Abnett", 2),  # smartcase: a capital matches case
+    ("ABNETT", 0),
+    ("nothing like it", 0),
+])
+def test_what_the_filter_matches(two_searches, query, expected):
+    # pilot.press takes key names: a space is "space"
+    async def steps(app, pilot):
+        await open_warhammer(pilot)
+        await pilot.press("slash", *("space" if c == " " else c for c in query))
+        return len(rows(app)), shown_text(app.query_one(ResultsTable).border_subtitle)
+
+    n, subtitle = run_app(two_searches, steps)
+    assert n == expected
+    if not expected:
+        assert subtitle.startswith("no matches")
+
+
+def test_enter_keeps_the_filter_and_goes_to_the_results(two_searches):
+    async def steps(app, pilot):
+        await open_warhammer(pilot)
+        await pilot.press("slash", *"mobi", "enter")
+        kept = app.focused, app.query_one("#filter").display, len(rows(app))
+        # `/` again edits it
+        await pilot.press("slash")
+        value = app.query_one(FilterInput).value
+        await pilot.press("backspace", "backspace", "backspace", "backspace", *"pdf", "enter")
+        return kept, value, len(rows(app))
+
+    (focused, bar_shown, n), value, after = run_app(two_searches, steps)
+    assert isinstance(focused, ResultsTable) and not bar_shown and n == 3
+    assert value == "mobi"
+    assert after == 2
+
+
+def test_esc_in_the_prompt_clears_the_filter(two_searches):
+    async def steps(app, pilot):
+        await open_warhammer(pilot)
+        await pilot.press("slash", *"mobi", "escape")
+        return app.focused, app.query_one("#filter").display, len(rows(app))
+
+    focused, bar_shown, n = run_app(two_searches, steps)
+    assert isinstance(focused, ResultsTable) and not bar_shown and n == 10
+
+
+def test_esc_in_the_results_clears_the_filter_then_goes_back(two_searches):
+    async def steps(app, pilot):
+        await open_warhammer(pilot)
+        await pilot.press("slash", *"mobi", "enter", "escape")
+        cleared = app.focused, len(rows(app))
+        await pilot.press("escape")
+        return cleared, app.focused
+
+    (focused, n), back = run_app(two_searches, steps)
+    assert isinstance(focused, ResultsTable) and n == 10
+    assert isinstance(back, SearchList)
+
+
+def test_the_filter_keeps_the_cursor_on_its_row(two_searches):
+    async def steps(app, pilot):
+        await open_warhammer(pilot)
+        await pilot.press("j", "j")  # The Rose in Darkness
+        await pilot.press("slash", *"40")
+        table = app.query_one(ResultsTable)
+        return app._rows[table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value].title
+
+    assert run_app(two_searches, steps) == "Danie Ware - Warhammer 40,000 - The Rose in Darkness (s)"
+
+
+def test_a_filter_is_for_one_search(two_searches):
+    async def steps(app, pilot):
+        await open_warhammer(pilot)
+        await pilot.press("slash", *"mobi", "enter", "h", "k")
+        await settle(pilot)
+        await pilot.press("j")
+        await settle(pilot)
+        return len(rows(app)), shown_text(app.query_one(ResultsTable).border_title)
+
+    assert run_app(two_searches, steps) == (10, "results: warhammer")
+
+
+def test_filter_from_the_sidebar(two_searches):
+    async def steps(app, pilot):
+        await pilot.press("slash", *"dune", "enter")
+        return app.focused, len(rows(app))
+
+    focused, n = run_app(two_searches, steps)
+    assert isinstance(focused, ResultsTable) and n == 2
+
+
+def test_nothing_to_filter_without_results(searches):
+    async def steps(app, pilot):
+        await pilot.press("slash")
+        return app.query_one("#filter").display, status(app)
+
+    bar_shown, text = run_app(searches, steps)
+    assert not bar_shown and "nothing to filter" in text
+
+
+def test_gg_and_G_in_the_results(two_searches):
+    async def steps(app, pilot):
+        await open_warhammer(pilot)
+        table = app.query_one(ResultsTable)
+        await pilot.press("G")
+        bottom = table.cursor_row
+        await pilot.press("g", "k", "g")  # not gg
+        not_gg = table.cursor_row
+        await pilot.press("g", "g")
+        return bottom, not_gg, table.cursor_row
+
+    # 10 results and the divider
+    assert run_app(two_searches, steps) == (10, 9, 0)
+
+
+def test_gg_and_G_in_the_sidebar(two_searches):
+    async def steps(app, pilot):
+        sidebar = app.query_one(SearchList)
+        await pilot.press("G")
+        bottom = sidebar.highlighted
+        await pilot.press("g", "g")
+        return bottom, sidebar.highlighted
+
+    assert run_app(two_searches, steps) == (1, 0)
 
 
 def test_enter_on_the_divider_does_nothing(two_searches):

@@ -17,6 +17,7 @@ from rich.text import Text
 from textual.binding import Binding
 from textual.widgets import RichLog
 
+from .jump import JUMP_KEYS, JumpKeys
 from .styles import Styles
 
 # As in the log file
@@ -93,35 +94,26 @@ class LogHandler(logging.Handler):
             self.handleError(record)
 
 
-class LogView(RichLog):
+class LogView(JumpKeys, RichLog):
     """The log, full screen. `j`/`k`, `gg`/`G`; `Tab` or `Esc` goes back."""
 
     BINDINGS = [
         Binding("j", "scroll_down", "Down", show=False),
         Binding("k", "scroll_up", "Up", show=False),
-        Binding("g", "top", "Top", show=False),  # gg: see on_key
-        Binding("G", "bottom", "Bottom", show=False),
+        *JUMP_KEYS,
         Binding("tab,escape", "app.toggle_log", "Back"),
     ]
 
     def __init__(self, **kwargs):
         # Following is decided per line (see add), not by RichLog
         super().__init__(max_lines=MAX_LINES, wrap=True, auto_scroll=False, **kwargs)
-        self._g_pressed = False
 
     def add(self, entry: Table):
         """Show `entry`, following it if the view was at the bottom."""
         self.write(entry, expand=True, scroll_end=self.is_vertical_scroll_end)
 
-    def on_key(self, event):
-        # `gg` is two presses of g; anything else in between cancels it
-        if event.key != "g":
-            self._g_pressed = False
+    def jump_to_top(self):
+        self.scroll_home(animate=False)
 
-    def action_top(self):
-        if self._g_pressed:
-            self.scroll_home(animate=False)
-        self._g_pressed = not self._g_pressed
-
-    def action_bottom(self):
+    def jump_to_bottom(self):
         self.scroll_end(animate=False)
