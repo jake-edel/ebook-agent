@@ -119,11 +119,11 @@ class AgentService(Protocol):
 - **Phase 1:** `AgentService` is the agent object itself, running in the TUI's process. The Unix socket keeps running there too, as it does in the headless agent today.
 - **Later (optional):** run the agent as a daemon and have the TUI connect to it over the Unix socket as a client, so one IRC connection serves the TUI and scripts. That needs more of the interface over the socket (see *Transports* in `core-interface.md`), so it's only worth building once it's actually needed. *(Open question 1.)*
 
-Today's headless mode (logs to the terminal, input over the socket) stays available, for example as `ebooks_agent.py --headless`, with the TUI as the default.
+Today's headless mode (logs to the terminal, input over the socket) stays available as `ebooks --headless`, with the TUI as the default. That's done as part of packaging (stage 2a of [`packaging-plan.md`](packaging-plan.md)), not here.
 
 ## Stages
 
-Built in thin slices, each one usable on its own. Using each stage decides the next, so later stages are rough on purpose. The TUI runs from `ebooks_tui.py` until it's ready to be the default.
+Built in thin slices, each one usable on its own. Using each stage decides the next, so later stages are rough on purpose. The TUI is the default: `ebooks.py` runs it, and `ebooks.py --headless` the bare agent.
 
 | Stage | Scope | Status |
 |---|---|---|
@@ -135,7 +135,7 @@ Built in thin slices, each one usable on its own. Using each stage decides the n
 | 5a | The hook's outcome reaches frontends: `Request.hook` (`running`, `done`, `failed`) and `hook_error`, sent as `RequestUpdated`. See *Stage 5: books* | done |
 | 5b | A BOOKS section in the sidebar: transfers that turn into downloads, the hook's outcome, details in the main pane, `d` to dismiss. A running hook counts as in progress for `q`. See *Stage 5: books* | done |
 | 5c | A log view: `Tab` switches to it, full screen, and back. What `agent.log` gets, live, this session only. See *Stage 5: books* | done |
-| 6 | Polish from use: ~~offline bots greyed out~~ (done: a bot not in the channel has its rows dimmed, live, and the subtitle names them; Enter on one is refused; while not joined nobody counts as offline), ~~no bot column~~ (done: which bot only matters when it's offline, and that's shown by dimming), sorting, `?` help, ~~`gg`/`G`~~ (done: in the sidebar, the results and the log), the TUI as the default with `--headless` | |
+| 6 | Polish from use: ~~offline bots greyed out~~ (done: a bot not in the channel has its rows dimmed, live, and the subtitle names them; Enter on one is refused; while not joined nobody counts as offline), ~~no bot column~~ (done: which bot only matters when it's offline, and that's shown by dimming), sorting, `?` help, ~~`gg`/`G`~~ (done: in the sidebar, the results and the log), ~~the TUI as the default with `--headless`~~ (done in [`packaging-plan.md`](packaging-plan.md), stage 2a) | |
 
 ### Stage 5: books
 

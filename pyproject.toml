@@ -1,0 +1,28 @@
+[project]
+name = "ebooks-cli"
+version = "0.1.0"
+description = "Search IRCHighway's #ebooks and download books over DCC"
+readme = "README.md"
+# 3.11 for tomllib; below 3.16 because irc3 1.1.12 breaks there (see TODO.md)
+requires-python = ">=3.11,<3.16"
+dependencies = [
+    "irc3==1.1.12",
+    # Young and changes quickly
+    "textual==8.2.8",
+]
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.uv]
+# Not a package yet: the modules are still top-level (docs/packaging-plan.md, stage 2)
+package = false
+
+[tool.pytest.ini_options]
+# Let tests import the project's modules (core, config, server.agent, tui.app...)
+pythonpath = ["."]
+testpaths = ["tests"]
+filterwarnings = [
+    # irc3 uses asyncio.iscoroutinefunction, deprecated in Python 3.14: not our code
+    "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning:irc3",
+]

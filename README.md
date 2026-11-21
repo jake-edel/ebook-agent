@@ -4,36 +4,23 @@ A Python agent for IRCHighway's `#ebooks` channel. It sends `@search` queries an
 
 ## Requirements
 
-- Python 3.11+
-- `irc3`, and `textual` for the TUI
+- [uv](https://docs.astral.sh/uv/), which installs Python (3.11 to 3.15) and the dependencies (`irc3`, and `textual` for the TUI) itself
 
 ## Setup
 
-First time only — create a virtual environment in `.venv/` and install dependencies into it:
+Install uv, if you don't have it:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-Every new terminal session — activate the venv before running the agent:
+Then, from the project root, run anything with `uv run`. The first run creates `.venv/` and installs the pinned dependencies from `uv.lock`, and later runs keep it in sync, so there's no venv to create or activate:
 
 ```bash
-source .venv/bin/activate
+uv run ebooks.py
 ```
 
-Your prompt should now start with `(.venv)`. To confirm, `which python` should point inside the project's `.venv/`. Run `deactivate` to leave the venv.
-
-Using fish or csh? Use `source .venv/bin/activate.fish` or `source .venv/bin/activate.csh` instead.
-
-Skip activation entirely by calling the venv's Python directly:
-
-```bash
-.venv/bin/python ebooks_agent.py
-```
-
-After pulling changes that touch `requirements.txt`, re-run `pip install -r requirements.txt` with the venv active.
+`uv sync` does the install step on its own, if you want it done ahead of time.
 
 ## Configuration
 
@@ -45,10 +32,10 @@ cp config.example.toml config.toml
 
 `config.toml` is gitignored, so your local settings stay out of commits. `config.example.toml` lists every setting with its default and what it does: IRC host, nick and channel, the timeouts, the size limits, the downloads folder, a command to run on each finished book (e.g. to move it into a library), and the log file.
 
-Any setting the file leaves out keeps its built-in default. The agent reads `config.toml` next to `ebooks_agent.py`, or another file if you pass one:
+Any setting the file leaves out keeps its built-in default. It reads `config.toml` next to `ebooks.py`, or another file if you pass one:
 
 ```bash
-python ebooks_agent.py --config ~/ebooks.toml
+uv run ebooks.py --config ~/ebooks.toml
 ```
 
 Relative paths in the config file (`downloads.dir`, `log.file`, ...) are relative to that file.
@@ -57,13 +44,18 @@ Mistakes are caught at startup with a clear message, and the agent exits without
 
 ## Usage
 
-Start the agent:
+One command, two modes:
 
 ```bash
-python ebooks_agent.py
+uv run ebooks.py              # the TUI (see below)
+uv run ebooks.py --headless   # no interface: log to the terminal, take requests over the socket
 ```
 
-It connects to IRC and then runs in the foreground, logging what it does: connecting, each request, downloads, and where each file was saved. There's no prompt. Commands come in over a Unix socket instead:
+Both connect to IRC and serve the Unix socket, so only one can run at a time.
+
+### Headless
+
+`--headless` connects to IRC and then runs in the foreground, logging what it does: connecting, each request, downloads, and where each file was saved. There's no prompt. Commands come in over a Unix socket instead:
 
 ```
 INFO Connected to irc.irchighway.net, joining #ebooks
@@ -79,10 +71,10 @@ Press `Ctrl+C`, or send `SIGTERM`, to disconnect and exit.
 
 ### The log file
 
-Both the agent and the TUI also log to `agent.log` (set by `log.file` in the config), so there's a record to look back on. The file is appended to across runs: each run starts with a `---- session start` line and ends with `---- session end`. A run with no end line crashed or was killed. Every line has a timestamp:
+Both modes also log to `agent.log` (set by `log.file` in the config), so there's a record to look back on. The file is appended to across runs: each run starts with a `---- session start` line and ends with `---- session end`. A run with no end line crashed or was killed. Every line has a timestamp:
 
 ```
-2026-11-11 14:02:10.950 INFO  ---- session start: ebooks_agent pid 48211, config /home/jake/ebooks-cli/config.toml, UTC+0100
+2026-11-11 14:02:10.950 INFO  ---- session start: ebooks --headless pid 48211, config /home/jake/ebooks-cli/config.toml, UTC+0100
 2026-11-11 14:03:01.010 INFO  Message sent: @search dune frank herbert
 ...
 2026-11-11 14:30:00.010 INFO  ---- session end
@@ -90,10 +82,10 @@ Both the agent and the TUI also log to `agent.log` (set by `log.file` in the con
 
 At 5 MiB the file is rotated: the old one becomes `agent.log.1`, and the 3 most recent old files are kept. The size and count can be changed in the config. The files are readable by you only, since they hold your searches and the books you asked for. See [`docs/logging-plan.md`](docs/logging-plan.md) for where this is going.
 
-### The TUI (in progress)
+### The TUI
 
 ```bash
-python ebooks_tui.py
+uv run ebooks.py
 ```
 
 It connects to IRC and browses your past searches in `searches/`. Move with `j`/`k` (or the arrows), `Enter`, `l` or `→` to go into a search's results, and `h`, `←` or `Esc` to come back. Results list the epubs first, then the other formats below a divider. `Enter` on a result requests that book: the first column shows how it's going (`…` waiting, `42%`, `⇢` being moved by the post-download hook, `✓` done, `⚠` the hook failed, `✗` failed), and the status bar has the details.
@@ -108,14 +100,14 @@ Every book requested this session, from the TUI or over the socket, is listed un
 
 The colours come from a theme: `[tui] theme` in `config.toml`. The default, `ansi-dark`, uses your terminal's own colours, so the TUI follows your terminal's theme; `config.example.toml` lists the others (`tokyo-night`, `gruvbox`, `catppuccin-mocha`...). The widgets are styled in `tui/app.tcss`, and the colours of text inside them by meaning (failed, warning, muted...) in `tui/styles.py`. Quitting waits for a running hook to finish, rather than killing it partway.
 
-The TUI serves the Unix socket too, so socket clients keep working while it's open (their requests show up in the TUI). It can't run beside `ebooks_agent.py`. What's next: see [`docs/tui-plan.md`](docs/tui-plan.md).
+The TUI serves the Unix socket too, so socket clients keep working while it's open (their requests show up in the TUI). It can't run beside `--headless`. What's next: see [`docs/tui-plan.md`](docs/tui-plan.md).
 
 ### The socket
 
 Ask the agent where its socket is rather than working it out yourself:
 
 ```bash
-python ebooks_agent.py --socket-path
+uv run ebooks.py --socket-path
 # -> /run/user/1000/ebooks.sock
 ```
 
@@ -128,7 +120,7 @@ Only your user can use it: the socket is mode `0600` inside a directory only you
 The protocol is JSON lines. Connect, send one command, and read replies until the agent closes the connection:
 
 ```bash
-SOCK=$(python ebooks_agent.py --socket-path)
+SOCK=$(uv run ebooks.py --socket-path)
 
 # Search: the results file is saved in searches/
 echo '{"cmd": "search", "query": "Foundation Asimov"}' | socat -t 600 - UNIX-CONNECT:$SOCK
@@ -160,18 +152,12 @@ One example client is a Neovim `:Ebook` command (`~/.dotfiles/nvim/lua/config/eb
 
 ## Testing
 
-Install the dev dependencies once (with the venv active):
+`uv run` installs the dev dependencies (pytest) too. Run the suite from the project root:
 
 ```bash
-pip install -r requirements-dev.txt
-```
-
-Then run the suite from the project root:
-
-```bash
-pytest            # or: .venv/bin/python -m pytest
-pytest -v         # list every test
-pytest tests/test_limits.py   # just one file
+uv run pytest            # everything
+uv run pytest -v         # list every test
+uv run pytest tests/test_limits.py   # just one file
 ```
 
 The tests never touch the network or your real `downloads/` and `searches/` folders. Each test gets its own temporary directories, and DCC senders are faked locally.
@@ -189,12 +175,13 @@ The tests never touch the network or your real `downloads/` and `searches/` fold
 ## Project structure
 
 ```
-ebooks_agent.py   — entry point: flags, startup, runs until Ctrl+C
-ebooks_tui.py     — entry point for the TUI (in progress)
+ebooks.py         — entry point: flags, then the TUI (default) or --headless until Ctrl+C
 
 core.py           — the core interface: requests, events and status, shared by every frontend
 config.py         — loads and validates settings (defaults, overridden by config.toml)
 config.example.toml — documented template for config.toml
+pyproject.toml    — dependencies (pinned), Python versions, pytest settings
+uv.lock           — the exact versions installed
 results.py        — parser for SearchBot result files
 
 server/           — the agent side

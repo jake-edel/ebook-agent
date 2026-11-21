@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-import ebooks_agent
+import ebooks
 from config import Config, LogConfig
 from server import unix_socket as us
 
@@ -24,7 +24,7 @@ def test_serves_requests_until_stopped(runtime_dir, caplog):
 
     async def go():
         stop = asyncio.Event()
-        task = asyncio.create_task(ebooks_agent._serve(agent, stop, path))
+        task = asyncio.create_task(ebooks._serve(agent, stop, path))
         for _ in range(100):
             if path.exists():
                 break
@@ -47,7 +47,7 @@ def test_failed_search_is_logged(runtime_dir, caplog):
 
     async def go():
         stop = asyncio.Event()
-        task = asyncio.create_task(ebooks_agent._serve(agent, stop, path))
+        task = asyncio.create_task(ebooks._serve(agent, stop, path))
         for _ in range(100):
             if path.exists():
                 break
@@ -66,7 +66,7 @@ def test_socket_failure_stops_the_process(runtime_dir):
     path.write_text("not a socket")
 
     async def go():
-        await ebooks_agent._serve(FakeAgent(), asyncio.Event(), path)
+        await ebooks._serve(FakeAgent(), asyncio.Event(), path)
 
     with pytest.raises(us.SocketUnavailableError):
         asyncio.run(asyncio.wait_for(go(), 1))
@@ -74,7 +74,7 @@ def test_socket_failure_stops_the_process(runtime_dir):
 
 def test_socket_path_flag_prints_where_the_agent_listens(runtime_dir):
     # What socket clients run instead of guessing the location
-    script = Path(ebooks_agent.__file__)
+    script = Path(ebooks.__file__)
     out = subprocess.run(
         [sys.executable, str(script), "--socket-path"],
         env={**os.environ, "XDG_RUNTIME_DIR": str(runtime_dir)},
@@ -92,7 +92,7 @@ def test_refuses_to_start_beside_a_running_agent(runtime_dir, monkeypatch):
         def __init__(self, config):
             connected.append(config)
 
-    monkeypatch.setattr(ebooks_agent, "EbooksAgent", NeverConnect)
+    monkeypatch.setattr(ebooks, "EbooksAgent", NeverConnect)
     path = runtime_dir / "ebooks.sock"
 
     async def go():
@@ -103,7 +103,7 @@ def test_refuses_to_start_beside_a_running_agent(runtime_dir, monkeypatch):
             await asyncio.sleep(0.01)
         try:
             with pytest.raises(us.SocketInUseError):
-                await ebooks_agent._main(ebooks_agent.Config())
+                await ebooks._main(ebooks.Config())
         finally:
             first.cancel()
             await asyncio.gather(first, return_exceptions=True)
@@ -128,12 +128,35 @@ def test_session_is_logged_to_the_file(runtime_dir, monkeypatch, tmp_path):
         async def stop(self):
             pass
 
-    monkeypatch.setattr(ebooks_agent, "EbooksAgent", SlowAgent)
+    monkeypatch.setattr(ebooks, "EbooksAgent", SlowAgent)
     monkeypatch.setattr(us, "socket_path", lambda: runtime_dir / "ebooks.sock")
     config = Config(log=LogConfig(file=tmp_path / "agent.log"))
     with pytest.raises(TimeoutError):
-        asyncio.run(ebooks_agent._main(config, tmp_path / "config.toml"))
+        asyncio.run(ebooks._main(config, tmp_path / "config.toml"))
     start, connected, end = (tmp_path / "agent.log").read_text().splitlines()
-    assert f"session start: ebooks_agent pid {os.getpid()}, config {tmp_path / 'config.toml'}" in start
+    assert f"session start: ebooks --headless pid {os.getpid()}, config {tmp_path / 'config.toml'}" in start
     assert connected.endswith("INFO  Connected to irc.example.net, joining #ebooks")
     assert end.endswith("session end: TimeoutError: Didn't join #ebooks within 30s")
+
+
+def _run_main(code, runtime_dir):
+    return subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=Path(ebooks.__file__).parent,
+        env={**os.environ, "XDG_RUNTIME_DIR": str(runtime_dir)},
+        capture_output=True, text=True,
+    )
+
+
+def test_socket_path_flag_does_not_load_textual(runtime_dir):
+    # Only the TUI needs Textual: the other modes shouldn't pay for importing it
+    out = _run_main("import sys, ebooks; ebooks.main(['--socket-path']); "
+                    "print('textual' in sys.modules)", runtime_dir)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.splitlines()[-1] == "False"
+
+
+def test_modes_are_mutually_exclusive(runtime_dir):
+    out = _run_main("import ebooks; ebooks.main(['--headless', '--socket-path'])", runtime_dir)
+    assert out.returncode == 2
+    assert "not allowed with argument" in out.stderr

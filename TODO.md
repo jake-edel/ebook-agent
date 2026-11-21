@@ -10,14 +10,14 @@ The interactive, Neovim-inspired frontend, built in stages: see [`docs/tui-plan.
 
 Log what the agent sent, what was sent to it, and every request's state changes to a rotating file, in both the CLI and the TUI. See [`docs/logging-plan.md`](docs/logging-plan.md).
 
+## Next: install as a uv tool
+
+One `ebooks` package and one `ebooks` command (the TUI, or `--headless`), XDG paths for the config, searches and log, downloads in `~/Downloads/ebooks/`, and a `pyproject.toml`, so `uv tool install` (from git or a wheel) works on any Unix machine. See [`docs/packaging-plan.md`](docs/packaging-plan.md).
+
 ## Robustness / polish
 
-- [ ] **Pin dependencies**
-  - **Problem:** `irc3` (`requirements.txt`) and `pytest` (`requirements-dev.txt`) don't specify versions. `textual` is pinned.
-  - **Fix:** pin known-good versions (`irc3==1.1.12` at the time of writing), or add a lock file.
-
 - [ ] **irc3 will break on Python 3.16**
-  - **Problem:** irc3 1.1.12 calls `asyncio.iscoroutinefunction` (in `irc3/dec.py` and `irc3/utils.py`), deprecated since Python 3.14 and removed in 3.16 (the venv is on 3.13.5 at the time of writing). The warning is hidden in `pytest.ini`.
+  - **Problem:** irc3 1.1.12 calls `asyncio.iscoroutinefunction` (in `irc3/dec.py` and `irc3/utils.py`), deprecated since Python 3.14 and removed in 3.16 (the venv is on 3.13.5 at the time of writing). The warning is hidden in `pyproject.toml` (pytest's settings), and `requires-python` stops at `<3.16`.
   - **Fix:** watch for an irc3 release that fixes it, or patch it locally, before upgrading Python.
 
 - [ ] **CI**

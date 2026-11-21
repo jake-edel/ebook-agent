@@ -24,10 +24,10 @@ replies: the request carries on, and the file is still saved.
 
 The socket lives in a directory only the current user can access
 ($XDG_RUNTIME_DIR, normally /run/user/<uid>), is created mode 0600, and
-rejects connections from any other user. `ebooks_agent.py --socket-path`
+rejects connections from any other user. `ebooks.py --socket-path`
 prints where it is.
 
-Test: echo '{"cmd": "search", "query": "dune"}' | socat -t 600 - UNIX-CONNECT:$(python ebooks_agent.py --socket-path)
+Test: echo '{"cmd": "search", "query": "dune"}' | socat -t 600 - UNIX-CONNECT:$(uv run ebooks.py --socket-path)
 """
 
 import asyncio

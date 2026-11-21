@@ -1673,11 +1673,11 @@ def test_the_handler_goes_when_the_app_does(two_searches):
 
 
 def test_an_unknown_theme_is_a_config_error():
-    import ebooks_tui
+    import ebooks
     from config import ConfigError
-    ebooks_tui.check_theme("gruvbox")  # fine
+    ebooks.check_theme("gruvbox")  # fine
     with pytest.raises(ConfigError, match=r"tui.theme: unknown theme 'gruvbx' \(one of: .*gruvbox"):
-        ebooks_tui.check_theme("gruvbx")
+        ebooks.check_theme("gruvbx")
 
 
 def test_the_highlighted_entry_is_drawn_plain(two_searches):

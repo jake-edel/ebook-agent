@@ -497,7 +497,7 @@ class EbooksApp(App):
     TITLE = "ebooks"
     BINDINGS = APP_KEYS
     ENABLE_COMMAND_PALETTE = False
-    # Next to this file; `textual run --dev ebooks_tui.py` reloads it as you edit
+    # Next to this file; `textual run --dev ebooks.py` (from textual-dev) reloads it as you edit
     CSS_PATH = "app.tcss"
 
     def __init__(self, agent: AgentService, searches_dir: Path, socket_path: Path | None = None,
