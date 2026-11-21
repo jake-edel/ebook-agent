@@ -2,13 +2,9 @@
 
 Outstanding work, roughly in priority order. The backend is done: what it offers frontends is in [`docs/core-interface.md`](docs/core-interface.md), and its history is in the git log.
 
-## Next: the TUI
+## The TUI
 
-The interactive, Neovim-inspired frontend, built in stages: see [`docs/tui-plan.md`](docs/tui-plan.md). Stages 1 (browsing past searches) and 2 (requesting books) are done; next is stage 3, searching from the TUI.
-
-## Next: an audit log file
-
-Log what the agent sent, what was sent to it, and every request's state changes to a rotating file, in both the CLI and the TUI. See [`docs/logging-plan.md`](docs/logging-plan.md).
+Stages 4 (filtering results) and 6 (polish from use) are still open: see [`docs/tui-plan.md`](docs/tui-plan.md).
 
 ## Next: install as a uv tool
 
@@ -17,7 +13,7 @@ One `ebooks` package and one `ebooks` command (the TUI, or `--headless`), XDG pa
 ## Robustness / polish
 
 - [ ] **irc3 will break on Python 3.16**
-  - **Problem:** irc3 1.1.12 calls `asyncio.iscoroutinefunction` (in `irc3/dec.py` and `irc3/utils.py`), deprecated since Python 3.14 and removed in 3.16 (the venv is on 3.13.5 at the time of writing). The warning is hidden in `pyproject.toml` (pytest's settings), and `requires-python` stops at `<3.16`.
+  - **Problem:** irc3 1.1.12 calls `asyncio.iscoroutinefunction` (in `irc3/dec.py` and `irc3/utils.py`), deprecated since Python 3.14 and removed in 3.16. The warning is hidden in `pyproject.toml` (pytest's settings), and `requires-python` stops at `<3.16`.
   - **Fix:** watch for an irc3 release that fixes it, or patch it locally, before upgrading Python.
 
 - [ ] **CI**
